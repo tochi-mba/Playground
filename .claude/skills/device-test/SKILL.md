@@ -53,8 +53,8 @@ Claude never talks to the phone directly. Everything goes through GitHub:
 
 - `.github/workflows/android.yml`: cloud build. Change nothing here for device testing.
 - `.github/workflows/device-test.yml`: phone job. `APP_ID` is the one knob when targeting a different app.
-- `harness/scripts/`: what the job runs on the phone. Plain bash + python, runner-agnostic.
-- `harness/termux/`: how the runner is installed and started. Setup steps in `harness/README.md`.
+- `mobile-harness/harness/scripts/`: what the job runs on the phone. Plain bash + python, runner-agnostic.
+- `mobile-harness/harness/termux/`: how the runner is installed and started. Setup steps in `mobile-harness/harness/README.md`.
 
-Unit tests (`src/test`) run in the cloud on every push and never need the phone. Only put
-tests in `src/androidTest` when they truly need a device.
+Unit tests (`mobile-harness/app/src/test`) run in the cloud on every push and never need the phone. Only put
+tests in `mobile-harness/app/src/androidTest` when they truly need a device.

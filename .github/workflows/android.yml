@@ -4,7 +4,13 @@ name: Android
 
 on:
   push:
+    paths:
+      - "mobile-harness/**"
+      - ".github/workflows/android.yml"
   pull_request:
+    paths:
+      - "mobile-harness/**"
+      - ".github/workflows/android.yml"
   workflow_dispatch:
 
 permissions:
@@ -13,6 +19,10 @@ permissions:
 concurrency:
   group: android-${{ github.ref }}
   cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: mobile-harness
 
 jobs:
   build:
@@ -28,6 +38,8 @@ jobs:
           java-version: "17"
 
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          build-root-directory: mobile-harness
 
       - name: Unit tests and APKs
         run: ./gradlew --no-daemon testDebugUnitTest assembleDebug assembleDebugAndroidTest
@@ -38,8 +50,8 @@ jobs:
           name: apks
           if-no-files-found: error
           path: |
-            app/build/outputs/apk/debug/app-debug.apk
-            app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            mobile-harness/app/build/outputs/apk/debug/app-debug.apk
+            mobile-harness/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 
       - name: Upload unit test reports
         if: always()
@@ -47,7 +59,7 @@ jobs:
         with:
           name: unit-test-reports
           if-no-files-found: ignore
-          path: app/build/reports/tests/testDebugUnitTest
+          path: mobile-harness/app/build/reports/tests/testDebugUnitTest
 
       - name: Summary
         run: |

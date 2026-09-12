@@ -8,6 +8,9 @@ name: Release
 on:
   push:
     branches: [main]
+    paths:
+      - "mobile-harness/**"
+      - ".github/workflows/release.yml"
     tags: ["v*"]
   workflow_dispatch:
 
@@ -20,6 +23,10 @@ concurrency:
 
 env:
   VERSION_MAJOR_MINOR: "0.1"
+
+defaults:
+  run:
+    working-directory: mobile-harness
 
 jobs:
   release:
@@ -35,6 +42,8 @@ jobs:
           java-version: "17"
 
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          build-root-directory: mobile-harness
 
       - name: Work out the version
         id: version
@@ -91,7 +100,7 @@ jobs:
           name: Playground ${{ steps.version.outputs.name }}
           prerelease: ${{ steps.version.outputs.prerelease }}
           generate_release_notes: true
-          files: dist/*
+          files: mobile-harness/dist/*
           fail_on_unmatched_files: true
 
       - name: Summary

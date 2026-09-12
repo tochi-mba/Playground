@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # One-time setup of this phone as a GitHub Actions runner. Run inside Termux (F-Droid build):
 #
-#   RUNNER_TOKEN=<registration token> ~/playground/harness/termux/install.sh
+#   RUNNER_TOKEN=<registration token> ~/playground/mobile-harness/harness/termux/install.sh
 #
 # Get the token from https://github.com/tochi-mba/playground/settings/actions/runners/new
 # (it expires after an hour). Re-running is safe; it skips what is already done.

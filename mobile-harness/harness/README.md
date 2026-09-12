@@ -30,15 +30,15 @@ push branch ──> android.yml (cloud) builds app-debug.apk + androidTest.apk
    https://github.com/tochi-mba/playground/settings/actions/runners/new (linux, ARM64).
    It expires in an hour. Then:
    ```sh
-   RUNNER_TOKEN=<paste token> ~/playground/harness/termux/install.sh
+   RUNNER_TOKEN=<paste token> ~/playground/mobile-harness/harness/termux/install.sh
    ```
 5. Pair adb with the phone itself. Wireless debugging > *Pair device with pairing code* shows
    an IP:port and a code:
    ```sh
-   ~/playground/harness/termux/ubuntu.sh adb pair 127.0.0.1:<pairing port>
+   ~/playground/mobile-harness/harness/termux/ubuntu.sh adb pair 127.0.0.1:<pairing port>
    ```
 6. Start it: tap the **Start Harness** widget, or run
-   `~/playground/harness/termux/start-runner.sh`. The runner should show **Online** at
+   `~/playground/mobile-harness/harness/termux/start-runner.sh`. The runner should show **Online** at
    https://github.com/tochi-mba/playground/settings/actions/runners within a minute.
 
 ## Every reboot
@@ -64,11 +64,11 @@ Every push to `main` publishes a GitHub Release at
 https://github.com/tochi-mba/playground/releases with three APKs: the release build, the
 debug build the harness tests, and the androidTest APK. Download the release APK on the phone
 and open it; each new version installs over the previous one because all CI builds share the
-key in `signing/debug.keystore`.
+key in `mobile-harness/signing/debug.keystore`.
 
 ## Pointing it at another app
 
-Change `APP_ID` in `.github/workflows/device-test.yml` to the debug `applicationId` of the app
+Change `APP_ID` in `.github/workflows/device-test.yml` (repo root) to the debug `applicationId` of the app
 and make sure its build workflow uploads an artifact named `apks` containing the app APK and
 the androidTest APK. Everything else is generic.
 

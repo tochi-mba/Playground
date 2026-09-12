@@ -26,7 +26,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # applicationId of the debug build (see app/build.gradle.kts applicationIdSuffix).
+  # applicationId of the debug build (see mobile-harness/app/build.gradle.kts applicationIdSuffix).
   # Change this one value to point the harness at a different app.
   APP_ID: dev.tochi.playground.harness
 
@@ -38,7 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: harness
+          sparse-checkout: mobile-harness/harness
 
       - name: Download APKs from build ${{ inputs.build_run_id }}
         uses: actions/download-artifact@v4
@@ -49,13 +49,13 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Connect adb
-        run: harness/scripts/adb-connect.sh
+        run: mobile-harness/harness/scripts/adb-connect.sh
 
       - name: Prepare device
-        run: harness/scripts/device-prep.sh "${{ github.ref_name }} build ${{ inputs.build_run_id }}"
+        run: mobile-harness/harness/scripts/device-prep.sh "${{ github.ref_name }} build ${{ inputs.build_run_id }}"
 
       - name: Run instrumented tests
-        run: harness/scripts/run-instrumented.sh apks results "${{ inputs.test_filter }}"
+        run: mobile-harness/harness/scripts/run-instrumented.sh apks results "${{ inputs.test_filter }}"
 
       - name: Upload results
         if: always()
@@ -67,4 +67,4 @@ jobs:
 
       - name: Release the screen
         if: always()
-        run: harness/scripts/device-cleanup.sh results
+        run: mobile-harness/harness/scripts/device-cleanup.sh results
