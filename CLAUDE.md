@@ -9,6 +9,10 @@ runner, so instrumented tests run on real hardware while Claude works from the c
   JVM unit tests in `src/test`, instrumented tests in `src/androidTest`.
 - `.github/workflows/android.yml`: cloud build, unit tests, uploads the `apks` artifact.
 - `.github/workflows/device-test.yml`: manual dispatch; runs androidTest on the phone runner.
+- `.github/workflows/release.yml`: every push to `main` publishes a GitHub Release (`v0.1.<run>`)
+  with signed release, debug and androidTest APKs attached. `workflow_dispatch` from another branch
+  makes a `build-<run>` pre-release instead.
+- `signing/debug.keystore`: public test-only key shared by all CI builds so updates install in place.
 - `harness/`: phone-side scripts, Termux runner setup, and `harness/README.md` for the human steps.
 - `.claude/skills/device-test/SKILL.md`: how to drive a device run and read its results. Use it
   whenever a change needs real-device verification.
@@ -18,6 +22,7 @@ runner, so instrumented tests run on real hardware while Claude works from the c
 - JDK 17, Gradle wrapper 8.9, AGP 8.7.3, Kotlin 2.0.21, compileSdk 35, minSdk 26.
 - `./gradlew testDebugUnitTest` for unit tests; `./gradlew assembleDebug assembleDebugAndroidTest`
   builds what the phone installs. The debug build uses applicationId `dev.tochi.playground.harness`.
+- `versionCode`/`versionName` come from `VERSION_CODE`/`VERSION_NAME` env vars (CI sets them from the run number).
 - The remote Claude container cannot reach dl.google.com, so Android builds are verified by CI on
   push, not locally. `harness/scripts/test_instrument_to_junit.py` runs locally with plain Python.
 

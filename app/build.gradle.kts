@@ -6,6 +6,16 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// CI sets these (see .github/workflows/release.yml). Local builds fall back to dev values.
+val ciVersionCode = providers.environmentVariable("VERSION_CODE").map { it.toInt() }.orElse(1)
+val ciVersionName = providers.environmentVariable("VERSION_NAME").orElse("0.1.0-dev")
+
+// Optional real release key, supplied through environment variables by CI secrets.
+val releaseKeystore = providers.environmentVariable("KEYSTORE_FILE")
+val releaseKeystorePassword = providers.environmentVariable("KEYSTORE_PASSWORD")
+val releaseKeyAlias = providers.environmentVariable("KEY_ALIAS")
+val releaseKeyPassword = providers.environmentVariable("KEY_PASSWORD")
+
 android {
     namespace = "dev.tochi.playground"
     compileSdk = 35
@@ -14,9 +24,30 @@ android {
         applicationId = "dev.tochi.playground"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = ciVersionCode.get()
+        versionName = ciVersionName.get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        // Checked-in key shared by every debug/CI build so a newer build always installs
+        // over the previous one on the phone. Test-only: never ship a store build with it.
+        getByName("debug") {
+            storeFile = rootProject.file("signing/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+        create("release") {
+            if (releaseKeystore.isPresent) {
+                storeFile = file(releaseKeystore.get())
+                storePassword = releaseKeystorePassword.get()
+                keyAlias = releaseKeyAlias.get()
+                keyPassword = releaseKeyPassword.get()
+            } else {
+                initWith(getByName("debug"))
+            }
+        }
     }
 
     buildTypes {
@@ -27,6 +58,7 @@ android {
         }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 

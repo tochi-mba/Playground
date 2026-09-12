@@ -58,6 +58,14 @@ what to do.
   start and the workflow checks out the scripts fresh on every job.
 - Logs: `~/.harness/runner.log` in Termux.
 
+## Installing the app itself on your phone
+
+Every push to `main` publishes a GitHub Release at
+https://github.com/tochi-mba/playground/releases with three APKs: the release build, the
+debug build the harness tests, and the androidTest APK. Download the release APK on the phone
+and open it; each new version installs over the previous one because all CI builds share the
+key in `signing/debug.keystore`.
+
 ## Pointing it at another app
 
 Change `APP_ID` in `.github/workflows/device-test.yml` to the debug `applicationId` of the app
