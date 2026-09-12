@@ -1,0 +1,3 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Installed to ~/.shortcuts/ by install.sh. Shows up in the Termux:Widget home-screen widget.
+exec "__REPO_DIR__/harness/termux/start-runner.sh"

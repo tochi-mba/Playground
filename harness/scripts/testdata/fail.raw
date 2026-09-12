@@ -1,0 +1,63 @@
+INSTRUMENTATION_STATUS: class=dev.tochi.playground.CounterScreenTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=3
+INSTRUMENTATION_STATUS: stream=
+dev.tochi.playground.CounterScreenTest:
+INSTRUMENTATION_STATUS: test=startsAtZero
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=dev.tochi.playground.CounterScreenTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=3
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=startsAtZero
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=dev.tochi.playground.CounterScreenTest
+INSTRUMENTATION_STATUS: current=2
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=3
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=tappingIncrementUpdatesCount
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=dev.tochi.playground.CounterScreenTest
+INSTRUMENTATION_STATUS: current=2
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=3
+INSTRUMENTATION_STATUS: stack=java.lang.AssertionError: Failed to assert the following: (Text + EditableText = [Count: 1])
+Semantics of the node:
+Node #7 at (l=414.0, t=1188.0, r=666.0, b=1268.0)px, Tag: 'count'
+Text = '[Count: 2]'
+	at androidx.compose.ui.test.SemanticsNodeInteraction.assert(SemanticsNodeInteraction.kt:172)
+	at dev.tochi.playground.CounterScreenTest.tappingIncrementUpdatesCount(CounterScreenTest.kt:22)
+INSTRUMENTATION_STATUS: stream=
+Error in tappingIncrementUpdatesCount(dev.tochi.playground.CounterScreenTest):
+java.lang.AssertionError: Failed to assert the following: (Text + EditableText = [Count: 1])
+INSTRUMENTATION_STATUS: test=tappingIncrementUpdatesCount
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_STATUS: class=dev.tochi.playground.CounterScreenTest
+INSTRUMENTATION_STATUS: current=3
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=3
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=ignoredForNow
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=dev.tochi.playground.CounterScreenTest
+INSTRUMENTATION_STATUS: current=3
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=3
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=ignoredForNow
+INSTRUMENTATION_STATUS_CODE: -3
+INSTRUMENTATION_RESULT: stream=
+
+Time: 3.104
+There was 1 failure:
+1) tappingIncrementUpdatesCount(dev.tochi.playground.CounterScreenTest)
+java.lang.AssertionError: Failed to assert the following: (Text + EditableText = [Count: 1])
+
+FAILURES!!!
+Tests run: 2,  Failures: 1
+
+
+INSTRUMENTATION_CODE: -1

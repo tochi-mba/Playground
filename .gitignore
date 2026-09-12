@@ -1,0 +1,16 @@
+# Gradle / Android
+.gradle/
+build/
+local.properties
+*.apk
+*.aab
+!harness/scripts/testdata/**
+
+# IDE
+.idea/
+*.iml
+.kotlin/
+
+# Harness runtime state (never commit)
+harness/**/.runner
+harness/**/.credentials*

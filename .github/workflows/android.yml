@@ -1,0 +1,58 @@
+# Cloud build. Runs on every push: JVM unit tests + debug APK + androidTest APK.
+# The APKs are uploaded as the "apks" artifact; device-test.yml pulls them by run id.
+name: Android
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and unit test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests and APKs
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug assembleDebugAndroidTest
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: apks
+          if-no-files-found: error
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+
+      - name: Upload unit test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          if-no-files-found: ignore
+          path: app/build/reports/tests/testDebugUnitTest
+
+      - name: Summary
+        run: |
+          {
+            echo "### Build run ${{ github.run_id }}"
+            echo
+            echo "To run the instrumented tests on the phone, dispatch **Device tests** with \`build_run_id=${{ github.run_id }}\`."
+          } >> "$GITHUB_STEP_SUMMARY"

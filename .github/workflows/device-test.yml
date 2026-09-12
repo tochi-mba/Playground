@@ -1,0 +1,70 @@
+# Phone job. Runs on the self-hosted runner living in Termux on the phone.
+# Dispatched manually (by Claude or you) so nothing queues while the phone is offline
+# and so a UI run never takes over the screen without warning.
+name: Device tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: "Run id of the Android workflow whose APKs to test"
+        required: true
+        type: string
+      test_filter:
+        description: "Extra `am instrument` args, e.g. -e class dev.tochi.playground.CounterScreenTest"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+# One run at a time per phone. Never cancel: a cancelled run leaves the screen pinned on.
+concurrency:
+  group: phone
+  cancel-in-progress: false
+
+env:
+  # applicationId of the debug build (see app/build.gradle.kts applicationIdSuffix).
+  # Change this one value to point the harness at a different app.
+  APP_ID: dev.tochi.playground.harness
+
+jobs:
+  device:
+    name: Instrumented tests on phone
+    runs-on: [self-hosted, android-phone]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: harness
+
+      - name: Download APKs from build ${{ inputs.build_run_id }}
+        uses: actions/download-artifact@v4
+        with:
+          name: apks
+          path: apks
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Connect adb
+        run: harness/scripts/adb-connect.sh
+
+      - name: Prepare device
+        run: harness/scripts/device-prep.sh "${{ github.ref_name }} build ${{ inputs.build_run_id }}"
+
+      - name: Run instrumented tests
+        run: harness/scripts/run-instrumented.sh apks results "${{ inputs.test_filter }}"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-results
+          path: results
+          if-no-files-found: warn
+
+      - name: Release the screen
+        if: always()
+        run: harness/scripts/device-cleanup.sh results

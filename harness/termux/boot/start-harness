@@ -1,0 +1,7 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Installed to ~/.termux/boot/ by install.sh. Termux:Boot runs it after every reboot.
+# Wireless debugging is off after a reboot, so the runner comes online but adb attaches
+# only once you toggle it back on; the job's adb-connect.sh rediscovers the port.
+termux-wake-lock
+sleep 20
+exec "__REPO_DIR__/harness/termux/start-runner.sh"
