@@ -1,6 +1,6 @@
 INSTRUMENTATION_STATUS: id=ActivityManagerService
-INSTRUMENTATION_STATUS: Error=Unable to find instrumentation info for: ComponentInfo{dev.tochi.playground.harness.test/androidx.test.runner.AndroidJUnitRunner}
+INSTRUMENTATION_STATUS: Error=Unable to find instrumentation info for: ComponentInfo{dev.tochi.mobileharness.debug.test/androidx.test.runner.AndroidJUnitRunner}
 INSTRUMENTATION_STATUS_CODE: -1
-android.util.AndroidException: INSTRUMENTATION_FAILED: dev.tochi.playground.harness.test/androidx.test.runner.AndroidJUnitRunner
+android.util.AndroidException: INSTRUMENTATION_FAILED: dev.tochi.mobileharness.debug.test/androidx.test.runner.AndroidJUnitRunner
 	at com.android.commands.am.Instrument.run(Instrument.java:519)
-INSTRUMENTATION_FAILED: dev.tochi.playground.harness.test/androidx.test.runner.AndroidJUnitRunner
+INSTRUMENTATION_FAILED: dev.tochi.mobileharness.debug.test/androidx.test.runner.AndroidJUnitRunner

@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Playground"
+rootProject.name = "mobile-harness"
 include(":app")

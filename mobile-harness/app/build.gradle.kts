@@ -17,11 +17,11 @@ val releaseKeyAlias = providers.environmentVariable("KEY_ALIAS")
 val releaseKeyPassword = providers.environmentVariable("KEY_PASSWORD")
 
 android {
-    namespace = "dev.tochi.playground"
+    namespace = "dev.tochi.mobileharness"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "dev.tochi.playground"
+        applicationId = "dev.tochi.mobileharness"
         minSdk = 26
         targetSdk = 35
         versionCode = ciVersionCode.get()
@@ -54,7 +54,7 @@ android {
         debug {
             // The phone harness installs debug builds. The suffix keeps them from
             // ever overwriting a real install of the app on the same device.
-            applicationIdSuffix = ".harness"
+            applicationIdSuffix = ".debug"
         }
         release {
             isMinifyEnabled = false

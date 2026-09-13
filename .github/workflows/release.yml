@@ -1,9 +1,11 @@
-# Publishes installable APKs as GitHub Releases.
-#   push to main      -> release vMAJOR.MINOR.<run number>, marked Latest
-#   push tag v*       -> release with that exact version
-#   workflow_dispatch -> pre-release build-<run number> from any branch (for trying a branch)
-# The debug and androidTest APKs ride along so the phone harness can fetch a build from a release too.
-name: Release
+# Publishes installable APKs for mobile-harness as GitHub Releases.
+#   push to main      -> mobile-harness-vMAJOR.MINOR.<run number>, marked Latest
+#   push a matching tag -> release with that exact version
+#   workflow_dispatch -> mobile-harness-build-<run number> pre-release from any branch
+# Tags carry the project slug so another project in this repo can publish its own releases
+# without colliding. The debug and androidTest APKs ride along so the phone harness can
+# install a build straight from a release.
+name: Release mobile-harness
 
 on:
   push:
@@ -11,7 +13,7 @@ on:
     paths:
       - "mobile-harness/**"
       - ".github/workflows/release.yml"
-    tags: ["v*"]
+    tags: ["mobile-harness-v*"]
   workflow_dispatch:
 
 permissions:
@@ -22,6 +24,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # One place to change the published name. PROJECT_SLUG prefixes tags and APK filenames.
+  PROJECT_SLUG: "mobile-harness"
   VERSION_MAJOR_MINOR: "0.1"
 
 defaults:
@@ -48,12 +52,12 @@ jobs:
       - name: Work out the version
         id: version
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            tag="${GITHUB_REF#refs/tags/}"; name="${tag#v}"; prerelease=false
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"; name="${tag#"${PROJECT_SLUG}-v"}"; prerelease=false
           elif [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            name="${VERSION_MAJOR_MINOR}.${GITHUB_RUN_NUMBER}"; tag="v${name}"; prerelease=false
+            name="${VERSION_MAJOR_MINOR}.${GITHUB_RUN_NUMBER}"; tag="${PROJECT_SLUG}-v${name}"; prerelease=false
           else
-            name="${VERSION_MAJOR_MINOR}.${GITHUB_RUN_NUMBER}-${GITHUB_REF_NAME//\//-}"; tag="build-${GITHUB_RUN_NUMBER}"; prerelease=true
+            name="${VERSION_MAJOR_MINOR}.${GITHUB_RUN_NUMBER}-${GITHUB_REF_NAME//\//-}"; tag="${PROJECT_SLUG}-build-${GITHUB_RUN_NUMBER}"; prerelease=true
           fi
           {
             echo "name=$name"
@@ -88,16 +92,16 @@ jobs:
           NAME: ${{ steps.version.outputs.name }}
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk "dist/playground-${NAME}.apk"
-          cp app/build/outputs/apk/debug/app-debug.apk "dist/playground-${NAME}-debug.apk"
-          cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk "dist/playground-${NAME}-androidTest.apk"
+          cp app/build/outputs/apk/release/app-release.apk "dist/${PROJECT_SLUG}-${NAME}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/${PROJECT_SLUG}-${NAME}-debug.apk"
+          cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk "dist/${PROJECT_SLUG}-${NAME}-androidTest.apk"
           (cd dist && sha256sum ./* > SHA256SUMS.txt && cat SHA256SUMS.txt)
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: Playground ${{ steps.version.outputs.name }}
+          name: mobile-harness ${{ steps.version.outputs.name }}
           prerelease: ${{ steps.version.outputs.prerelease }}
           generate_release_notes: true
           files: mobile-harness/dist/*
@@ -109,7 +113,7 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           {
-            echo "### Published Playground $NAME"
+            echo "### Published mobile-harness $NAME"
             echo
             echo "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
           } >> "$GITHUB_STEP_SUMMARY"

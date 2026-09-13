@@ -1,4 +1,4 @@
-package dev.tochi.playground
+package dev.tochi.mobileharness
 
 import org.junit.Assert.assertEquals
 import org.junit.Test

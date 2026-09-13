@@ -1,4 +1,4 @@
-package dev.tochi.playground
+package dev.tochi.mobileharness
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity

@@ -45,7 +45,7 @@ class ParseTests(unittest.TestCase):
         self.assertFalse(summary["ok"])
         self.assertFalse(summary["completed"])
         statuses = [(t["classname"], t["status"]) for t in parsed["tests"]]
-        self.assertIn(("dev.tochi.playground.CounterScreenTest", "error"), statuses)
+        self.assertIn(("dev.tochi.mobileharness.CounterScreenTest", "error"), statuses)
         self.assertIn(("harness.instrumentation", "error"), statuses)
         self.assertIn("boom", parsed["tests"][0]["stack"])
 

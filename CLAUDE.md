@@ -9,3 +9,5 @@ own CLAUDE.md; read that file before working inside it.
   those from the repo root.
 
 Workflows are path-filtered to their folder, so changes elsewhere do not trigger Android builds.
+Release tags and APK names are prefixed with the project slug (`mobile-harness-v0.1.4`) so each
+experiment can publish its own releases independently.

@@ -28,7 +28,7 @@ Claude never talks to the phone directly. Everything goes through GitHub:
    without asking.
 4. **Dispatch** with `actions_run_trigger` → `run_workflow`, `workflow_id: device-test.yml`,
    `ref: <branch>`, `inputs: { build_run_id: "<id from step 1>" }`. Optionally
-   `test_filter: "-e class dev.tochi.playground.CounterScreenTest"` to run a subset.
+   `test_filter: "-e class dev.tochi.mobileharness.CounterScreenTest"` to run a subset.
    Never dispatch while another device run is queued or in progress (concurrency group `phone`).
 5. **Wait** for the run to complete (typically 1 to 3 minutes once picked up), then read the
    `device-results` artifact (`actions_list` → `list_workflow_run_artifacts`, then

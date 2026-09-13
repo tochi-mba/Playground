@@ -1,6 +1,6 @@
 # Cloud build. Runs on every push: JVM unit tests + debug APK + androidTest APK.
 # The APKs are uploaded as the "apks" artifact; device-test.yml pulls them by run id.
-name: Android
+name: Build mobile-harness
 
 on:
   push:

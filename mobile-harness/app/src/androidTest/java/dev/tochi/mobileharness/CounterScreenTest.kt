@@ -1,4 +1,4 @@
-package dev.tochi.playground
+package dev.tochi.mobileharness
 
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule

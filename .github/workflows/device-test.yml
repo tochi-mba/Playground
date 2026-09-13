@@ -1,7 +1,7 @@
 # Phone job. Runs on the self-hosted runner living in Termux on the phone.
 # Dispatched manually (by Claude or you) so nothing queues while the phone is offline
 # and so a UI run never takes over the screen without warning.
-name: Device tests
+name: Device tests (mobile-harness)
 
 on:
   workflow_dispatch:
