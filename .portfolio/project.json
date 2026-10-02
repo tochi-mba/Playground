@@ -1,0 +1,12 @@
+{
+  "$schema": "https://tochi-mba.github.io/schema/project.schema.json",
+  "slug": "playground",
+  "name": "Playground",
+  "tagline": "Spikes, and an Android harness that tests an app on a real device from CI.",
+  "description": "A scratch repository for experiments before they earn a repository of their own. The mobile harness is a small Compose app with unit and instrumented tests, built and run on a device by its own workflows.",
+  "stack": ["Kotlin", "Shell", "Python"],
+  "category": "tool",
+  "status": "wip",
+  "order": 320,
+  "display": true
+}
