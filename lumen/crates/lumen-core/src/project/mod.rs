@@ -286,6 +286,47 @@ pub struct Output {
     /// Window placement; `None` means "ask at first run".
     #[serde(default)]
     pub placement: Option<Placement>,
+    /// Calibration overlay drawn on top of the content (never in show mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay: Option<Overlay>,
+}
+
+/// A calibration pattern drawn over an output while aligning projectors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Overlay {
+    /// Fine alignment grid with a centre cross; content shows through the cells.
+    Grid,
+    /// Centre crosshair with diagonals, for aiming two projectors at one point.
+    Crosshair,
+    /// Colour bars, for colour matching.
+    Bars,
+    /// Eleven grey steps, for gamma matching across a seam.
+    GreySteps,
+    /// Flat white, so any visible seam is the blend's fault.
+    BlendCheck,
+}
+
+impl Overlay {
+    /// Every overlay, in menu order.
+    pub const ALL: [Self; 5] = [
+        Self::Grid,
+        Self::Crosshair,
+        Self::Bars,
+        Self::GreySteps,
+        Self::BlendCheck,
+    ];
+
+    /// Menu label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Grid => "Grid",
+            Self::Crosshair => "Crosshair",
+            Self::Bars => "Colour bars",
+            Self::GreySteps => "Grey steps",
+            Self::BlendCheck => "Blend check (white)",
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -621,6 +662,40 @@ impl Project {
     /// Finds an output mutably.
     pub fn output_mut(&mut self, id: &str) -> Option<&mut Output> {
         self.outputs.iter_mut().find(|o| o.id == id)
+    }
+
+    /// Placed outputs as desktop rectangles, with their index in `outputs`.
+    pub fn placed_rects(&self) -> Vec<(usize, crate::blend::PlacedRect)> {
+        self.outputs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, o)| {
+                let p = o.placement.as_ref()?;
+                Some((
+                    i,
+                    crate::blend::PlacedRect {
+                        x: i64::from(p.x),
+                        y: i64::from(p.y),
+                        width: i64::from(o.width),
+                        height: i64::from(o.height),
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    /// Sets blend widths from the overlap of placed outputs; returns how many edges changed.
+    /// Outputs without a placement, or that overlap nothing, are left alone.
+    pub fn suggest_blends(&mut self) -> usize {
+        let mut n = 0;
+        for (i, edge, width) in crate::blend::suggest_all(&self.placed_rects()) {
+            let e = self.outputs[i].blend.edge_mut(edge);
+            if (e.width - width).abs() > 1e-9 {
+                e.width = width;
+                n += 1;
+            }
+        }
+        n
     }
 
     /// Surfaces drawn on `output`, in draw order.

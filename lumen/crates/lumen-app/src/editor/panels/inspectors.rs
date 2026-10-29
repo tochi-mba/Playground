@@ -6,7 +6,7 @@ use eframe::egui::{self, Color32, RichText};
 use lumen_core::blend::BlendCurve;
 use lumen_core::midimap::MidiMode;
 use lumen_core::params::ParamValue;
-use lumen_core::project::{BlendMode, GeneratorKind, Placement, SourceKind};
+use lumen_core::project::{BlendMode, GeneratorKind, Overlay, Placement, SourceKind};
 use lumen_core::warp::{BezierMesh, WarpKind};
 use std::time::Instant;
 
@@ -49,6 +49,13 @@ fn show_inspector(
     }
     param_toggle(ui, editor, "Blackout", "/show/blackout");
     param_slider(ui, editor, "Master", "/show/master", 0.0..=1.0);
+    if ui
+        .button("Suggest blends")
+        .on_hover_text("Set blend widths from where placed outputs overlap on the desktop")
+        .clicked()
+    {
+        editor.suggest_blends();
+    }
     ui.separator();
     ui.label(match &editor.osc {
         Some(s) => format!("OSC listening on {}", s.local_addr()),
@@ -276,6 +283,36 @@ fn output_inspector(
         &format!("/output/{id}/blend/gamma"),
         1.0..=3.0,
     );
+    ui.separator();
+    ui.label("Calibration");
+    let mut overlay = output.overlay;
+    egui::ComboBox::from_label("Overlay")
+        .selected_text(overlay.map_or("none", Overlay::label))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut overlay, None, "none");
+            for k in Overlay::ALL {
+                ui.selectable_value(&mut overlay, Some(k), k.label());
+            }
+        });
+    if overlay != output.overlay {
+        editor.set_overlay(id, overlay);
+    }
+    ui.label(
+        RichText::new(
+            "Overlays never show in show mode. Gamma match: put Grey steps on both sides of a \
+             seam, then press [ or ] until the steps match across it.",
+        )
+        .weak()
+        .small(),
+    );
+    ui.horizontal(|ui| {
+        if ui.button("Gamma match steps").clicked() {
+            editor.set_overlay(id, Some(Overlay::GreySteps));
+        }
+        if ui.button("Clear overlay").clicked() {
+            editor.set_overlay(id, None);
+        }
+    });
     ui.separator();
     if ui.button("Delete output").clicked() {
         editor.selection = Selection::Output(id.to_string());

@@ -3,8 +3,8 @@
 use lumen_core::blend::EdgeBlend;
 use lumen_core::geom::Vec2;
 use lumen_core::mask::combined_coverage;
-use lumen_core::project::{BlendMode, ColorAdjust, Crop, Project};
-use lumen_core::warp::{Warp, WarpError, WarpMesh};
+use lumen_core::project::{BlendMode, ColorAdjust, Crop, Overlay, Project};
+use lumen_core::warp::{Quad, Warp, WarpError, WarpMesh};
 use lumen_sources::{Frame, SourceSet};
 use std::sync::Arc;
 
@@ -143,13 +143,24 @@ impl Post {
     }
 }
 
-/// Remembers rasterised masks per surface so an unchanged mask costs nothing per frame.
+/// Remembers rasterised masks per surface (and generated overlays per size) so an unchanged
+/// mask or overlay costs nothing per frame.
 #[derive(Debug, Default)]
 pub struct MaskCache {
     entries: std::collections::HashMap<String, (Vec<lumen_core::mask::Mask>, MaskRaster)>,
+    overlays: std::collections::HashMap<(Overlay, u32, u32), Arc<Frame>>,
 }
 
 impl MaskCache {
+    /// Returns the overlay frame at `width × height`, generating it once.
+    pub fn overlay(&mut self, kind: Overlay, width: u32, height: u32) -> Arc<Frame> {
+        Arc::clone(
+            self.overlays
+                .entry((kind, width, height))
+                .or_insert_with(|| Arc::new(lumen_sources::overlay::generate(kind, width, height))),
+        )
+    }
+
     /// Returns the raster for `masks`, rasterising only when they changed since last time.
     pub fn get(&mut self, surface_id: &str, masks: &[lumen_core::mask::Mask]) -> MaskRaster {
         if let Some((cached_masks, raster)) = self.entries.get(surface_id) {
@@ -215,6 +226,19 @@ impl Scene {
         mesh_density: u32,
         cache: &mut MaskCache,
     ) -> Result<Self, SceneError> {
+        Self::build_with(project, output_id, sources, mesh_density, cache, true)
+    }
+
+    /// Like [`Scene::build_cached`]; `overlays = false` leaves calibration overlays out, as
+    /// show mode does.
+    pub fn build_with(
+        project: &Project,
+        output_id: &str,
+        sources: &SourceSet,
+        mesh_density: u32,
+        cache: &mut MaskCache,
+        overlays: bool,
+    ) -> Result<Self, SceneError> {
         let output = project
             .output(output_id)
             .ok_or_else(|| SceneError::UnknownOutput(output_id.to_string()))?;
@@ -241,10 +265,25 @@ impl Scene {
                 mask: cache.get(&s.id, &s.masks),
             });
         }
+        let (width, height) = (output.width.max(1), output.height.max(1));
+        if let Some(kind) = output.overlay.filter(|_| overlays) {
+            draws.push(SurfaceDraw {
+                id: format!("overlay:{kind:?}"),
+                mesh: Quad::full_frame()
+                    .tessellate(1)
+                    .map_err(|e| SceneError::Warp("overlay".into(), e))?,
+                frame: cache.overlay(kind, width, height),
+                source_id: format!("overlay:{kind:?}:{width}x{height}"),
+                opacity: 1.0,
+                blend_mode: BlendMode::Normal,
+                crop: Crop::default(),
+                mask: MaskRaster::full(1),
+            });
+        }
         Ok(Self {
             output_id: output_id.to_string(),
-            width: output.width.max(1),
-            height: output.height.max(1),
+            width,
+            height,
             draws,
             post: Post {
                 blend: output.blend,
@@ -269,6 +308,30 @@ mod tests {
         assert!(errs.is_empty());
         s.poll();
         s
+    }
+
+    #[test]
+    fn overlays_are_appended_cached_and_skipped_in_show_mode() {
+        let mut p = demo_project();
+        p.outputs[0].overlay = Some(Overlay::Grid);
+        let s = demo_sources(&p);
+        let mut cache = MaskCache::default();
+        let scene = Scene::build_cached(&p, "left", &s, 4, &mut cache).unwrap();
+        let last = scene.draws.last().unwrap();
+        assert_eq!(last.id, "overlay:Grid");
+        assert_eq!(last.source_id, "overlay:Grid:1920x1080");
+        assert_eq!((last.frame.width, last.frame.height), (1920, 1080));
+        assert!(last.mask.is_full());
+        let again = Scene::build_cached(&p, "left", &s, 4, &mut cache).unwrap();
+        assert!(
+            Arc::ptr_eq(&again.draws.last().unwrap().frame, &last.frame),
+            "the overlay frame is generated once per size"
+        );
+        let show = Scene::build_with(&p, "left", &s, 4, &mut cache, false).unwrap();
+        assert!(show.draws.iter().all(|d| !d.id.starts_with("overlay:")));
+        p.outputs[0].overlay = None;
+        let plain = Scene::build_cached(&p, "left", &s, 4, &mut cache).unwrap();
+        assert_eq!(plain.draws.len(), show.draws.len());
     }
 
     #[test]

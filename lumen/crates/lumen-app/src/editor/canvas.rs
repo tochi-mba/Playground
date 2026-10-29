@@ -30,6 +30,12 @@ pub struct CanvasState {
     pub grid_divisions: u32,
     /// Readout from the last frame (handle and output-pixel position).
     pub readout: Option<(handles::Handle, lumen_core::geom::Vec2)>,
+    /// Stage view (every placed output on the virtual desktop) instead of one output.
+    pub stage: bool,
+    /// Screen rects of the outputs drawn by the stage view last frame; tests aim here.
+    pub stage_rects: Vec<(String, Rect)>,
+    /// Output being dragged on the stage and the desktop offset accumulated so far.
+    pub stage_drag: Option<(String, egui::Vec2)>,
 }
 
 impl Default for CanvasState {
@@ -47,6 +53,9 @@ impl Default for CanvasState {
             show_grid: false,
             grid_divisions: 10,
             readout: None,
+            stage: false,
+            stage_rects: Vec::new(),
+            stage_drag: None,
         }
     }
 }

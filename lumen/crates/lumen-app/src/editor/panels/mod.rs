@@ -317,6 +317,8 @@ pub fn top_bar(
                 }
             });
             ui.menu_button("View", |ui| {
+                ui.checkbox(&mut canvas.stage, "Stage view  (T)")
+                    .on_hover_text("Every placed output on the virtual desktop");
                 ui.checkbox(&mut canvas.show_grid, "Grid  (G)");
                 ui.checkbox(&mut canvas.handles.snap, "Snap  (S)");
                 ui.checkbox(&mut editor.edit_on_wall, "Handles on output windows");
@@ -689,6 +691,11 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+N / Ctrl+O / Ctrl+S", "New / open / save"),
     ("I", "Identify: flash each output's name on its projector"),
     ("B", "Blackout"),
+    ("T", "Stage view: every placed output on the desktop"),
+    (
+        "[ / ]",
+        "Blend gamma of the shown output down / up (gamma match)",
+    ),
     ("Space", "GO: fade to the next cue"),
     ("F10", "Show mode; Escape twice leaves it"),
     ("?", "This list"),

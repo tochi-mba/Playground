@@ -98,6 +98,16 @@ fn surface_warp(h: &Harness<'static, LumenApp>, id: &str) -> WarpKind {
     h.state().editor.project.surface(id).unwrap().warp.clone()
 }
 
+/// A primary click at a screen position (press, release, settle).
+fn click_at(h: &mut Harness<'static, LumenApp>, pos: egui::Pos2) {
+    h.hover_at(pos);
+    settle(h);
+    h.drag_at(pos);
+    settle(h);
+    h.drop_at(pos);
+    settle(h);
+}
+
 fn drag(h: &mut Harness<'static, LumenApp>, from: egui::Pos2, to: egui::Pos2) {
     h.hover_at(from);
     settle(h);

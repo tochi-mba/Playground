@@ -8,6 +8,7 @@
 
 pub mod clock;
 pub mod generator;
+pub mod overlay;
 pub mod pattern;
 pub mod sequence;
 #[cfg(feature = "spout")]

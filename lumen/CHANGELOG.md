@@ -26,6 +26,12 @@ All notable changes to lumen are documented here. The format follows
   output levels, surface opacities and the cue list; the editor shows a QR code of it.
 - Settings file (`settings.toml` in the OS config directory) for ports, grid, snap,
   autosave interval and the ffmpeg path.
+- Stage view (`T`): every placed output drawn to scale on the virtual desktop with monitor
+  outlines and the overlaps highlighted; click selects, drag moves the placement.
+- "Suggest blends" sets left/right or top/bottom blend widths from the overlap of placed
+  outputs.
+- Calibration overlays per output (grid, crosshair, colour bars, grey steps, blend check),
+  never shown in show mode, and a gamma match tool (`[` / `]` nudge the blend gamma).
 - `cargo xtask file-lengths` (also in `cargo xtask ci`): no source file over 1000 lines.
 
 ## [0.1.0] - 2026-10-29

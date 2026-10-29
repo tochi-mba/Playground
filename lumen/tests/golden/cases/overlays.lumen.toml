@@ -1,0 +1,44 @@
+schema_version = 1
+name = "Calibration overlays over content"
+
+[[sources]]
+id = "checker"
+kind = "test_pattern"
+pattern = "checker"
+
+[[outputs]]
+id = "grid"
+width = 1280
+height = 720
+overlay = "grid"
+
+[[outputs]]
+id = "cross"
+width = 1280
+height = 720
+overlay = "crosshair"
+
+[[outputs]]
+id = "steps"
+width = 1280
+height = 720
+overlay = "grey_steps"
+
+[outputs.blend]
+left = { width = 0.0, curve = "smooth" }
+right = { width = 0.3, curve = "smooth" }
+top = { width = 0.0, curve = "smooth" }
+bottom = { width = 0.0, curve = "smooth" }
+gamma = 2.2
+
+[[surfaces]]
+id = "a"
+output = "grid"
+source = "checker"
+z = 0
+
+[[surfaces]]
+id = "b"
+output = "cross"
+source = "checker"
+z = 0

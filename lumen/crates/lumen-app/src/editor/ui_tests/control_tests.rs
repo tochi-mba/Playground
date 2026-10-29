@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::editor::Editor;
-use eframe::egui::{accesskit::Role, Key};
+use eframe::egui::{self, accesskit::Role, Key};
 use egui_kittest::kittest::Queryable;
 use lumen_core::midimap::{MidiEvent, MidiKey, MidiMode};
 use lumen_core::params::ParamValue;
@@ -261,4 +261,114 @@ fn settings_open_controllers_and_show_launch_takes_a_remote_port() {
     );
     assert!(second.editor.remote.is_none(), "a taken port is logged");
     let _ = dir;
+}
+
+#[test]
+fn stage_view_selects_drags_and_the_calibration_tools_work() {
+    use lumen_core::project::{Overlay, Placement};
+    let mut h = harness(Editor::new(demo_project(), None));
+    // Nothing placed: the stage still shows the monitors (no crash) and the hint.
+    h.key_press(Key::T);
+    settle(&mut h);
+    assert!(h.state().canvas.stage);
+    assert!(h.state().canvas.stage_rects.is_empty());
+    h.state_mut().editor.edit(|p| {
+        p.outputs[0].placement = Some(Placement {
+            monitor: "DISPLAY1".into(),
+            x: 0,
+            y: 0,
+        });
+        p.outputs[1].placement = Some(Placement {
+            monitor: "DISPLAY2".into(),
+            x: 1728,
+            y: 0,
+        });
+    });
+    settle(&mut h);
+    assert_eq!(h.state().canvas.stage_rects.len(), 2);
+    // Click the right output to select it.
+    let right = h.state().canvas.stage_rects[1].1;
+    click_at(&mut h, right.center());
+    settle(&mut h);
+    assert_eq!(
+        h.state().editor.selection,
+        Selection::Output("right".into())
+    );
+    assert_eq!(h.state().canvas.output.as_deref(), Some("right"));
+    // Drag it 40 screen points right: the placement moves by 40 / scale desktop pixels.
+    let scale = right.width() / 1920.0;
+    drag(
+        &mut h,
+        right.center(),
+        right.center() + egui::vec2(40.0, 0.0),
+    );
+    let p = h
+        .state()
+        .editor
+        .project
+        .output("right")
+        .unwrap()
+        .placement
+        .clone()
+        .unwrap();
+    let expected = (40.0 / scale).round() as i32;
+    assert!(
+        (p.x - 1728 - expected).abs() <= 2,
+        "{} vs {}",
+        p.x,
+        1728 + expected
+    );
+    assert!(h.state().canvas.stage_drag.is_none());
+    // Click empty space clears the selection.
+    click_at(&mut h, egui::pos2(right.max.x + 2.0, right.max.y + 2.0));
+    settle(&mut h);
+    // Suggest blends from the overlap, through the show inspector.
+    h.state_mut().editor.selection = Selection::None;
+    settle(&mut h);
+    click(&mut h, "Suggest blends");
+    assert!(
+        h.state()
+            .editor
+            .project
+            .output("left")
+            .unwrap()
+            .blend
+            .right
+            .width
+            > 0.0
+    );
+    // Back to the output view; overlay combo and gamma keys on the shown output.
+    menu(&mut h, "View", "Stage view  (T)");
+    assert!(!h.state().canvas.stage);
+    click(&mut h, "left");
+    click(&mut h, "Overlay");
+    click(&mut h, "Crosshair");
+    assert_eq!(
+        h.state().editor.project.output("left").unwrap().overlay,
+        Some(Overlay::Crosshair)
+    );
+    click(&mut h, "Gamma match steps");
+    assert_eq!(
+        h.state().editor.project.output("left").unwrap().overlay,
+        Some(Overlay::GreySteps)
+    );
+    let g = h.state().editor.project.output("left").unwrap().blend.gamma;
+    h.key_press(Key::CloseBracket);
+    settle(&mut h);
+    assert!((h.state().editor.project.output("left").unwrap().blend.gamma - g - 0.05).abs() < 1e-9);
+    h.key_press(Key::OpenBracket);
+    settle(&mut h);
+    assert!((h.state().editor.project.output("left").unwrap().blend.gamma - g).abs() < 1e-9);
+    click(&mut h, "Clear overlay");
+    assert_eq!(
+        h.state().editor.project.output("left").unwrap().overlay,
+        None
+    );
+    // Show mode ignores the stage and gamma keys.
+    h.state_mut().editor.enter_show_mode();
+    h.key_press(Key::T);
+    h.key_press(Key::CloseBracket);
+    settle(&mut h);
+    assert!(!h.state().canvas.stage);
+    assert!((h.state().editor.project.output("left").unwrap().blend.gamma - g).abs() < 1e-9);
 }

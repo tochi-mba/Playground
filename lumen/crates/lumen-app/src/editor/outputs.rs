@@ -255,6 +255,7 @@ mod tests {
             blend: lumen_core::blend::EdgeBlend::none(),
             color: lumen_core::project::ColorAdjust::default(),
             placement,
+            overlay: None,
         }
     }
 

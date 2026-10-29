@@ -4,6 +4,7 @@ mod canvas;
 mod handles;
 mod outputs;
 mod panels;
+mod stage;
 mod state;
 mod thumbs;
 #[cfg(test)]
@@ -359,6 +360,9 @@ impl LumenApp {
                 || i.consume_key(Modifiers::SHIFT, Key::Slash)
                 || i.consume_key(Modifiers::NONE, Key::F1),
             reset_view: i.consume_key(Modifiers::NONE, Key::Num0),
+            stage: i.consume_key(Modifiers::NONE, Key::T),
+            gamma_down: i.consume_key(Modifiers::NONE, Key::OpenBracket),
+            gamma_up: i.consume_key(Modifiers::NONE, Key::CloseBracket),
         });
         if k.undo && !typing {
             self.editor.undo();
@@ -432,6 +436,15 @@ impl LumenApp {
         if k.help {
             self.panels.help = !self.panels.help;
         }
+        if k.stage && !self.editor.show_mode {
+            self.canvas.stage = !self.canvas.stage;
+        }
+        if (k.gamma_down || k.gamma_up) && !self.editor.show_mode {
+            if let Some(id) = self.canvas.output.clone() {
+                let delta = if k.gamma_up { 0.05 } else { -0.05 };
+                self.editor.adjust_blend_gamma(&id, delta);
+            }
+        }
         if k.reset_view {
             self.canvas.reset_view();
         }
@@ -498,6 +511,9 @@ struct Shortcuts {
     lock: bool,
     help: bool,
     reset_view: bool,
+    stage: bool,
+    gamma_down: bool,
+    gamma_up: bool,
 }
 
 impl LumenApp {
@@ -575,7 +591,17 @@ impl LumenApp {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(egui::Color32::from_gray(18)))
                 .show(ui, |ui| {
-                    canvas::show(ui, &mut self.editor, &mut self.canvas, self.surface_format);
+                    if self.canvas.stage {
+                        stage::show(
+                            ui,
+                            &mut self.editor,
+                            &mut self.canvas,
+                            &self.monitors,
+                            self.surface_format,
+                        );
+                    } else {
+                        canvas::show(ui, &mut self.editor, &mut self.canvas, self.surface_format);
+                    }
                 });
             panels::dialogs(
                 &ctx,
@@ -735,17 +761,19 @@ pub fn monitor_at(monitors: &[MonitorInfo], x: i32, y: i32) -> Option<&MonitorIn
 /// Builds a project scene for display, ignoring errors (a broken warp just draws nothing).
 pub fn scene_for(editor: &mut Editor, output: &str) -> Option<lumen_render::Scene> {
     let project: &Project = &editor.project;
-    lumen_render::Scene::build_cached(
+    lumen_render::Scene::build_with(
         project,
         output,
         &editor.sources,
         lumen_render::scene::DEFAULT_MESH_DENSITY,
         &mut editor.mask_cache,
+        !editor.show_mode,
     )
     .ok()
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -783,9 +811,13 @@ mod tests {
     }
 
     #[test]
-    fn scene_for_ignores_bad_outputs() {
+    fn scene_for_ignores_bad_outputs_and_drops_overlays_in_show_mode() {
         let mut e = Editor::new(demo_project(), None);
         assert!(scene_for(&mut e, "left").is_some());
         assert!(scene_for(&mut e, "ghost").is_none());
+        e.set_overlay("left", Some(lumen_core::project::Overlay::Grid));
+        let n = scene_for(&mut e, "left").unwrap().draws.len();
+        e.enter_show_mode();
+        assert_eq!(scene_for(&mut e, "left").unwrap().draws.len(), n - 1);
     }
 }

@@ -50,6 +50,7 @@ pub fn demo_project() -> Project {
                 blend: blend(0.0, 0.2),
                 color: ColorAdjust::default(),
                 placement: None,
+                overlay: None,
             },
             Output {
                 id: "right".into(),
@@ -59,6 +60,7 @@ pub fn demo_project() -> Project {
                 blend: blend(0.2, 0.0),
                 color: ColorAdjust::default(),
                 placement: None,
+                overlay: None,
             },
         ],
         surfaces: vec![

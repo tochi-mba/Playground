@@ -592,6 +592,58 @@ fn files_become_sources_and_pending_actions() {
 }
 
 #[test]
+fn overlays_blend_suggestion_gamma_and_placement_moves() {
+    use lumen_core::project::{Overlay, Placement};
+    let mut e = editor();
+    assert!(e.set_overlay("left", Some(Overlay::Crosshair)));
+    assert_eq!(
+        e.project.output("left").unwrap().overlay,
+        Some(Overlay::Crosshair)
+    );
+    assert!(e.set_overlay("ghost", None), "unknown ids are a no-op edit");
+    assert!(e.undo());
+    assert_eq!(e.project.output("left").unwrap().overlay, None);
+
+    assert_eq!(e.suggest_blends(), 0);
+    assert_eq!(e.status, "no overlapping placed outputs");
+    e.edit(|p| {
+        p.outputs[0].placement = Some(Placement {
+            monitor: "a".into(),
+            x: 0,
+            y: 0,
+        });
+        p.outputs[1].placement = Some(Placement {
+            monitor: "b".into(),
+            x: 1728,
+            y: 0,
+        });
+    });
+    assert_eq!(e.suggest_blends(), 2);
+    assert!(e.status.starts_with("set 2 blend edges"));
+    assert!((e.project.output("right").unwrap().blend.left.width - 0.1).abs() < 1e-9);
+
+    let g0 = e.project.output("left").unwrap().blend.gamma;
+    assert!(e.adjust_blend_gamma("left", 0.05));
+    assert!((e.project.output("left").unwrap().blend.gamma - (g0 + 0.05)).abs() < 1e-9);
+    assert!(e.adjust_blend_gamma("left", 10.0));
+    assert_eq!(e.project.output("left").unwrap().blend.gamma, 3.0);
+    assert!(!e.adjust_blend_gamma("ghost", 0.1));
+    assert!(e.undo(), "each nudge is its own undo step");
+
+    assert!(!e.move_placement("left", 0, 0));
+    assert!(e.move_placement("left", 10, -5));
+    let p = e.project.output("left").unwrap().placement.clone().unwrap();
+    assert_eq!((p.x, p.y), (10, -5));
+    assert!(
+        e.move_placement("ghost", 1, 1),
+        "unknown id is a no-op edit"
+    );
+    e.enter_show_mode();
+    assert!(!e.set_overlay("left", Some(Overlay::Grid)));
+    assert!(!e.adjust_blend_gamma("left", 0.1));
+}
+
+#[test]
 fn output_window_toggle_and_misc() {
     let mut e = editor();
     e.toggle_output_window("left");

@@ -3,12 +3,64 @@
 use super::{source_kind_for, AlignOp, Editor, Selection};
 use lumen_core::geom::Vec2;
 use lumen_core::mask::Mask;
-use lumen_core::project::{Crop, Output, Source, SourceKind, Surface, TestPattern};
+use lumen_core::params::ParamValue;
+use lumen_core::project::{Crop, Output, Overlay, Source, SourceKind, Surface, TestPattern};
 use lumen_core::warp::WarpKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 impl Editor {
+    /// Sets or clears the calibration overlay of an output.
+    pub fn set_overlay(&mut self, id: &str, overlay: Option<Overlay>) -> bool {
+        let id = id.to_string();
+        self.edit(move |p| {
+            if let Some(o) = p.output_mut(&id) {
+                o.overlay = overlay;
+            }
+        })
+    }
+
+    /// Sets blend widths from the overlap of placed outputs. Returns how many edges changed.
+    pub fn suggest_blends(&mut self) -> usize {
+        let mut n = 0;
+        self.edit(|p| n = p.suggest_blends());
+        self.status = if n == 0 {
+            "no overlapping placed outputs".into()
+        } else {
+            format!("set {n} blend edges from the overlaps")
+        };
+        n
+    }
+
+    /// Nudges an output's blend gamma (the gamma match tool), clamped to `1..=3`.
+    pub fn adjust_blend_gamma(&mut self, id: &str, delta: f64) -> bool {
+        let address = format!("/output/{id}/blend/gamma");
+        let Some(ParamValue::Number(g)) = self.get_param(&address) else {
+            return false;
+        };
+        let next = ((g + delta).clamp(1.0, 3.0) * 100.0).round() / 100.0;
+        let ok = self.set_param(&address, ParamValue::Number(next));
+        self.commit();
+        ok
+    }
+
+    /// Moves a placed output on the virtual desktop by whole pixels.
+    pub fn move_placement(&mut self, id: &str, dx: i32, dy: i32) -> bool {
+        if dx == 0 && dy == 0 {
+            return false;
+        }
+        let id = id.to_string();
+        self.edit(move |p| {
+            if let Some(o) = p.output_mut(&id) {
+                if let Some(pl) = &mut o.placement {
+                    pl.x = pl.x.saturating_add(dx);
+                    pl.y = pl.y.saturating_add(dy);
+                }
+            }
+        })
+    }
+
+    /// Adds an output and selects it.
     pub fn add_output(&mut self) {
         let id = self.fresh_id("output");
         let new_id = id.clone();
@@ -21,6 +73,7 @@ impl Editor {
                 blend: lumen_core::blend::EdgeBlend::none(),
                 color: lumen_core::project::ColorAdjust::default(),
                 placement: None,
+                overlay: None,
             });
         });
         self.selection = Selection::Output(id);
@@ -378,6 +431,7 @@ impl Editor {
                         x,
                         y,
                     }),
+                    overlay: None,
                 });
                 p.surfaces.push(Surface {
                     id: sid,

@@ -433,6 +433,37 @@ fn rename_rewrites_references_and_validates() {
 }
 
 #[test]
+fn placed_rects_and_blend_suggestions() {
+    use crate::project::Placement;
+    let mut p = demo_project();
+    assert!(p.placed_rects().is_empty());
+    assert_eq!(p.suggest_blends(), 0);
+    p.outputs[0].placement = Some(Placement {
+        monitor: "a".into(),
+        x: 0,
+        y: 0,
+    });
+    p.outputs[1].placement = Some(Placement {
+        monitor: "b".into(),
+        x: 1728,
+        y: 0,
+    });
+    assert_eq!(p.placed_rects().len(), 2);
+    assert_eq!(p.placed_rects()[1].1.x, 1728);
+    assert_eq!(p.suggest_blends(), 2);
+    assert!((p.outputs[0].blend.right.width - 0.1).abs() < 1e-9);
+    assert!((p.outputs[1].blend.left.width - 0.1).abs() < 1e-9);
+    assert_eq!(p.suggest_blends(), 0, "already matching");
+    p.outputs[0].overlay = Some(Overlay::Grid);
+    let text = p.to_toml().unwrap();
+    assert!(text.contains("overlay = \"grid\""));
+    assert!(!text.contains("overlay = \"none\""));
+    let back = Project::from_toml(&text).unwrap();
+    assert_eq!(back.outputs[0].overlay, Some(Overlay::Grid));
+    assert_eq!(back.outputs[1].overlay, None);
+}
+
+#[test]
 fn fresh_ids_and_duplicates() {
     let mut p = demo_project();
     assert_eq!(p.fresh_id("new"), "new");

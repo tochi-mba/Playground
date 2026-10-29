@@ -147,11 +147,194 @@ impl EdgeBlend {
     }
 }
 
+/// Which edge of an output a blend applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Edge {
+    /// Left edge.
+    Left,
+    /// Right edge.
+    Right,
+    /// Top edge.
+    Top,
+    /// Bottom edge.
+    Bottom,
+}
+
+impl Edge {
+    /// Parameter-address segment, e.g. `left` in `/output/<id>/blend/left/width`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+        }
+    }
+}
+
+impl EdgeBlend {
+    /// Mutable access to one edge.
+    pub fn edge_mut(&mut self, edge: Edge) -> &mut BlendEdge {
+        match edge {
+            Edge::Left => &mut self.left,
+            Edge::Right => &mut self.right,
+            Edge::Top => &mut self.top,
+            Edge::Bottom => &mut self.bottom,
+        }
+    }
+}
+
+/// An axis-aligned rectangle in virtual-desktop pixels: a placed output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlacedRect {
+    /// Left.
+    pub x: i64,
+    /// Top.
+    pub y: i64,
+    /// Width.
+    pub width: i64,
+    /// Height.
+    pub height: i64,
+}
+
+/// A blend width to set on one output's edge, as a fraction of that output's size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Suggestion {
+    /// Edge of the first rectangle that overlaps the second.
+    pub edge_a: Edge,
+    /// Width for that edge, as a fraction of `a`'s size along the axis.
+    pub width_a: f64,
+    /// Edge of the second rectangle that overlaps the first.
+    pub edge_b: Edge,
+    /// Width for that edge, as a fraction of `b`'s size along the axis.
+    pub width_b: f64,
+}
+
+/// Blend widths for two placed outputs that overlap on the desktop.
+///
+/// Side-by-side outputs get left/right fades, stacked ones top/bottom, each as wide as the
+/// overlap. Rectangles that do not overlap, or that overlap on both axes equally (one inside
+/// the other), give `None`. The axis with the smaller overlap is the seam.
+pub fn suggest(a: PlacedRect, b: PlacedRect) -> Option<Suggestion> {
+    if a.width <= 0 || a.height <= 0 || b.width <= 0 || b.height <= 0 {
+        return None;
+    }
+    let ox = (a.x + a.width).min(b.x + b.width) - a.x.max(b.x);
+    let oy = (a.y + a.height).min(b.y + b.height) - a.y.max(b.y);
+    if ox <= 0 || oy <= 0 {
+        return None;
+    }
+    let horizontal_seam = ox * a.height.min(b.height) <= oy * a.width.min(b.width);
+    if horizontal_seam {
+        if ox >= a.width || ox >= b.width {
+            return None;
+        }
+        let (edge_a, edge_b) = if a.x <= b.x {
+            (Edge::Right, Edge::Left)
+        } else {
+            (Edge::Left, Edge::Right)
+        };
+        Some(Suggestion {
+            edge_a,
+            width_a: ox as f64 / a.width as f64,
+            edge_b,
+            width_b: ox as f64 / b.width as f64,
+        })
+    } else {
+        if oy >= a.height || oy >= b.height {
+            return None;
+        }
+        let (edge_a, edge_b) = if a.y <= b.y {
+            (Edge::Bottom, Edge::Top)
+        } else {
+            (Edge::Top, Edge::Bottom)
+        };
+        Some(Suggestion {
+            edge_a,
+            width_a: oy as f64 / a.height as f64,
+            edge_b,
+            width_b: oy as f64 / b.height as f64,
+        })
+    }
+}
+
+/// Blend widths for every overlapping pair of placed outputs in `rects`, as
+/// `(index, edge, width)`. Later pairs override earlier ones on the same edge.
+pub fn suggest_all(rects: &[(usize, PlacedRect)]) -> Vec<(usize, Edge, f64)> {
+    let mut out = Vec::new();
+    for (i, &(ia, a)) in rects.iter().enumerate() {
+        for &(ib, b) in &rects[i + 1..] {
+            if let Some(s) = suggest(a, b) {
+                out.push((ia, s.edge_a, s.width_a));
+                out.push((ib, s.edge_b, s.width_b));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn suggestions_follow_the_overlap() {
+        let a = PlacedRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+        let b = PlacedRect {
+            x: 1728,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+        let s = suggest(a, b).unwrap();
+        assert_eq!((s.edge_a, s.edge_b), (Edge::Right, Edge::Left));
+        assert!((s.width_a - 0.1).abs() < 1e-9 && (s.width_b - 0.1).abs() < 1e-9);
+        let s = suggest(b, a).unwrap();
+        assert_eq!((s.edge_a, s.edge_b), (Edge::Left, Edge::Right));
+        // Stacked, different sizes.
+        let c = PlacedRect {
+            x: 100,
+            y: 1000,
+            width: 1280,
+            height: 720,
+        };
+        let s = suggest(a, c).unwrap();
+        assert_eq!((s.edge_a, s.edge_b), (Edge::Bottom, Edge::Top));
+        assert!((s.width_a - 80.0 / 1080.0).abs() < 1e-9);
+        assert!((s.width_b - 80.0 / 720.0).abs() < 1e-9);
+        assert_eq!(suggest(c, a).unwrap().edge_a, Edge::Top);
+        // No overlap, touching, nested, degenerate.
+        let far = PlacedRect { x: 5000, ..a };
+        assert_eq!(suggest(a, far), None);
+        assert_eq!(suggest(a, PlacedRect { x: 1920, ..a }), None);
+        let inside = PlacedRect {
+            x: 10,
+            y: 10,
+            width: 100,
+            height: 100,
+        };
+        assert_eq!(suggest(a, inside), None);
+        assert_eq!(suggest(a, PlacedRect { width: 0, ..a }), None);
+        // All pairs.
+        let all = suggest_all(&[(0, a), (1, b), (2, far)]);
+        assert_eq!(all, vec![(0, Edge::Right, 0.1), (1, Edge::Left, 0.1)]);
+        let mut eb = EdgeBlend::none();
+        eb.edge_mut(Edge::Top).width = 0.3;
+        assert_eq!(eb.top.width, 0.3);
+        for e in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+            assert!(!e.name().is_empty());
+            *eb.edge_mut(e) = BlendEdge::default();
+        }
+        assert!(eb.is_identity());
+    }
 
     #[test]
     fn curves_are_complementary() {
