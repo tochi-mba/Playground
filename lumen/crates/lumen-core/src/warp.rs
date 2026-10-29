@@ -349,6 +349,139 @@ impl Warp for WarpKind {
 }
 
 impl WarpKind {
+    /// All control points (corners or mesh points), in storage order.
+    pub fn points(&self) -> Vec<Vec2> {
+        match self {
+            Self::Quad(q) => q.corners.to_vec(),
+            Self::Bezier(b) => b.control_points.clone(),
+        }
+    }
+
+    /// Applies `f` to every control point.
+    #[must_use]
+    pub fn map_points(&self, f: impl Fn(Vec2) -> Vec2) -> Self {
+        match self {
+            Self::Quad(q) => Self::Quad(Quad {
+                corners: q.corners.map(f),
+            }),
+            Self::Bezier(b) => Self::Bezier(BezierMesh {
+                cols: b.cols,
+                rows: b.rows,
+                control_points: b.control_points.iter().map(|p| f(*p)).collect(),
+            }),
+        }
+    }
+
+    /// Centre of the control points' bounding box.
+    pub fn centre(&self) -> Vec2 {
+        let pts = self.points();
+        if pts.is_empty() {
+            return Vec2::new(0.5, 0.5);
+        }
+        let (mut min, mut max) = (pts[0], pts[0]);
+        for p in &pts {
+            min = Vec2::new(min.x.min(p.x), min.y.min(p.y));
+            max = Vec2::new(max.x.max(p.x), max.y.max(p.y));
+        }
+        min.lerp(max, 0.5)
+    }
+
+    /// Mirrors left to right about the centre, keeping winding by swapping corner roles.
+    #[must_use]
+    pub fn flip_horizontal(&self) -> Self {
+        let c = self.centre();
+        let flipped = self.map_points(|p| Vec2::new(2.0 * c.x - p.x, p.y));
+        flipped.reorder_after_flip(true)
+    }
+
+    /// Mirrors top to bottom about the centre.
+    #[must_use]
+    pub fn flip_vertical(&self) -> Self {
+        let c = self.centre();
+        let flipped = self.map_points(|p| Vec2::new(p.x, 2.0 * c.y - p.y));
+        flipped.reorder_after_flip(false)
+    }
+
+    /// Rotates the geometry a quarter turn clockwise about its centre, in output pixels, so
+    /// that `aspect` (output width over height) keeps the shape undistorted.
+    #[must_use]
+    pub fn rotate_quarter(&self, aspect: f64) -> Self {
+        let c = self.centre();
+        let a = if aspect.is_finite() && aspect > 0.0 {
+            aspect
+        } else {
+            1.0
+        };
+        self.map_points(|p| {
+            // Work in a square space so the turn is a true rotation on the projector.
+            let dx = (p.x - c.x) * a;
+            let dy = p.y - c.y;
+            Vec2::new(c.x - dy / a, c.y + dx)
+        })
+    }
+
+    /// Moves the geometry so its centre sits at `(0.5, 0.5)`.
+    #[must_use]
+    pub fn centred(&self) -> Self {
+        let c = self.centre();
+        let d = Vec2::new(0.5 - c.x, 0.5 - c.y);
+        self.map_points(|p| p + d)
+    }
+
+    /// A full-frame quad shrunk to the largest rectangle with the source's aspect, centred.
+    /// `source_aspect` and `output_aspect` are width over height.
+    #[must_use]
+    pub fn fit_aspect(source_aspect: f64, output_aspect: f64) -> Self {
+        let (sa, oa) = (source_aspect.max(1e-6), output_aspect.max(1e-6));
+        let (w, h) = if sa > oa {
+            (1.0, oa / sa)
+        } else {
+            (sa / oa, 1.0)
+        };
+        let (x0, y0) = ((1.0 - w) / 2.0, (1.0 - h) / 2.0);
+        Self::Quad(Quad {
+            corners: [
+                Vec2::new(x0, y0),
+                Vec2::new(x0 + w, y0),
+                Vec2::new(x0 + w, y0 + h),
+                Vec2::new(x0, y0 + h),
+            ],
+        })
+    }
+
+    /// After mirroring, corners 0/1 and 2/3 (or 0/3 and 1/2) have swapped sides; swap them
+    /// back so the texture is mirrored rather than the quad folded inside out.
+    fn reorder_after_flip(self, horizontal: bool) -> Self {
+        match self {
+            Self::Quad(mut q) => {
+                if horizontal {
+                    q.corners.swap(0, 1);
+                    q.corners.swap(2, 3);
+                } else {
+                    q.corners.swap(0, 3);
+                    q.corners.swap(1, 2);
+                }
+                Self::Quad(q)
+            }
+            Self::Bezier(mut b) => {
+                let (w, h) = (b.width() as usize, b.height() as usize);
+                let mut pts = b.control_points.clone();
+                for j in 0..h {
+                    for i in 0..w {
+                        let (si, sj) = if horizontal {
+                            (w - 1 - i, j)
+                        } else {
+                            (i, h - 1 - j)
+                        };
+                        pts[j * w + i] = b.control_points[sj * w + si];
+                    }
+                }
+                b.control_points = pts;
+                Self::Bezier(b)
+            }
+        }
+    }
+
     /// Converts a quad into an equivalent flat Bezier mesh of the given size, or returns the
     /// mesh unchanged. Useful when a user upgrades a surface from corner-pin to mesh.
     pub fn to_bezier(&self, cols: u32, rows: u32) -> Result<BezierMesh, WarpError> {
@@ -505,6 +638,97 @@ mod tests {
         let mut bad = Quad::full_frame();
         bad.set_corner(0, Vec2::new(1.0, 0.0));
         assert!(WarpKind::Quad(bad).to_bezier(1, 1).is_err());
+    }
+
+    #[test]
+    fn transforms_keep_geometry_well_formed() {
+        let q = WarpKind::Quad(Quad {
+            corners: [
+                Vec2::new(0.1, 0.2),
+                Vec2::new(0.6, 0.1),
+                Vec2::new(0.7, 0.8),
+                Vec2::new(0.2, 0.7),
+            ],
+        });
+        let c = q.centre();
+        assert!((c.x - 0.4).abs() < 1e-12 && (c.y - 0.45).abs() < 1e-12);
+        for t in [
+            q.flip_horizontal(),
+            q.flip_vertical(),
+            q.rotate_quarter(16.0 / 9.0),
+            q.centred(),
+        ] {
+            assert!(t.tessellate(4).unwrap().is_well_formed(), "{t:?}");
+            assert!(
+                (t.centre()
+                    .distance(if matches!(t, WarpKind::Quad(_)) && t == q.centred() {
+                        Vec2::new(0.5, 0.5)
+                    } else {
+                        c
+                    }))
+                    < 1e-9
+            );
+        }
+        // Flipping twice is the identity.
+        let back = q.flip_horizontal().flip_horizontal();
+        for (a, b) in back.points().iter().zip(q.points()) {
+            assert!(a.distance(b) < 1e-12);
+        }
+        let back = q.flip_vertical().flip_vertical();
+        for (a, b) in back.points().iter().zip(q.points()) {
+            assert!(a.distance(b) < 1e-12);
+        }
+        // Four quarter turns are the identity.
+        let mut r = q.clone();
+        for _ in 0..4 {
+            r = r.rotate_quarter(2.0);
+        }
+        for (a, b) in r.points().iter().zip(q.points()) {
+            assert!(a.distance(b) < 1e-9);
+        }
+        assert_eq!(q.rotate_quarter(f64::NAN).points().len(), 4);
+        assert_eq!(q.centred().centre(), Vec2::new(0.5, 0.5));
+
+        let b = WarpKind::Bezier(BezierMesh::flat(2, 1).unwrap());
+        let close = |a: &WarpKind, b: &WarpKind| {
+            a.points()
+                .iter()
+                .zip(b.points())
+                .all(|(x, y)| x.distance(y) < 1e-12)
+        };
+        let fb = b.flip_horizontal();
+        assert!(fb.tessellate(4).unwrap().is_well_formed());
+        assert!(
+            close(&fb, &b),
+            "a symmetric flat mesh is unchanged by a flip"
+        );
+        assert!(close(&b.flip_vertical(), &b));
+        assert!(b
+            .rotate_quarter(1.0)
+            .tessellate(2)
+            .unwrap()
+            .is_well_formed());
+        assert_eq!(
+            WarpKind::Bezier(BezierMesh {
+                cols: 1,
+                rows: 1,
+                control_points: vec![]
+            })
+            .centre(),
+            Vec2::new(0.5, 0.5)
+        );
+
+        let fit = WarpKind::fit_aspect(16.0 / 9.0, 16.0 / 9.0);
+        assert_eq!(fit, WarpKind::default());
+        let WarpKind::Quad(wide) = WarpKind::fit_aspect(2.0, 1.0) else {
+            panic!()
+        };
+        assert!((wide.corners[0].y - 0.25).abs() < 1e-12 && wide.corners[0].x.abs() < 1e-12);
+        let WarpKind::Quad(tall) = WarpKind::fit_aspect(1.0, 2.0) else {
+            panic!()
+        };
+        assert!((tall.corners[0].x - 0.25).abs() < 1e-12 && tall.corners[0].y.abs() < 1e-12);
+        assert!(WarpKind::fit_aspect(0.0, 0.0).tessellate(1).is_ok());
     }
 
     #[test]

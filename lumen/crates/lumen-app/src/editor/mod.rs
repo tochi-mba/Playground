@@ -1,6 +1,7 @@
 //! The egui editor and show player.
 
 mod canvas;
+mod handles;
 mod outputs;
 mod panels;
 mod state;
@@ -15,7 +16,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-pub use state::{Editor, Selection};
+pub use state::{AlignOp, Editor, Pending, Selection};
+
+use crate::settings::Settings;
+use std::collections::HashMap;
 
 /// How the app was started.
 #[derive(Debug, Clone)]
@@ -49,6 +53,7 @@ pub struct MonitorInfo {
 
 /// Runs the editor until the window closes.
 pub fn run(launch: &Launch) -> anyhow::Result<ExitCode> {
+    let settings = Settings::load();
     let editor = match &launch.project {
         Some(path) => {
             let mut editor = Editor::open(path)?;
@@ -60,6 +65,7 @@ pub fn run(launch: &Launch) -> anyhow::Result<ExitCode> {
         }
         None => Editor::new(demo_project(), None),
     };
+    let _ = &settings;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("lumen")
@@ -99,12 +105,15 @@ pub fn run(launch: &Launch) -> anyhow::Result<ExitCode> {
                         .collect()
                 })
                 .unwrap_or_default();
-            Ok(Box::new(LumenApp::new(
+            let mut app = LumenApp::new(
                 editor,
                 &launch_for_app,
                 monitors,
                 render_state.target_format,
-            )))
+            );
+            app.apply_settings(Settings::load());
+            app.panels.welcome = launch_for_app.project.is_none() && !app.settings.skip_welcome;
+            Ok(Box::new(app))
         }),
     )
     .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -122,6 +131,14 @@ pub struct LumenApp {
     panels: panels::PanelState,
     frame_times: std::collections::VecDeque<Instant>,
     last_title: String,
+    /// Per-output-window interaction state.
+    wall: HashMap<String, outputs::OutputUiState>,
+    /// User preferences.
+    settings: Settings,
+    /// Set once the user confirmed quitting with unsaved changes.
+    close_confirmed: bool,
+    /// Files are being dragged over the window.
+    drop_hover: bool,
 }
 
 impl LumenApp {
@@ -154,6 +171,110 @@ impl LumenApp {
             panels: panels::PanelState::default(),
             frame_times: std::collections::VecDeque::new(),
             last_title: String::new(),
+            wall: HashMap::new(),
+            settings: Settings::default(),
+            close_confirmed: false,
+            drop_hover: false,
+        }
+    }
+
+    /// Applies loaded preferences to the live state.
+    pub fn apply_settings(&mut self, settings: Settings) {
+        self.canvas.show_grid = settings.show_grid;
+        self.canvas.grid_divisions = settings.grid_divisions.clamp(2, 64);
+        self.canvas.handles.snap = settings.snap;
+        self.editor.edit_on_wall = settings.edit_on_wall;
+        self.editor.autosave =
+            crate::autosave::Autosave::new(Duration::from_secs(settings.autosave_seconds.max(2)));
+        self.settings = settings;
+    }
+
+    /// Copies live toggles back into the preferences and saves them.
+    fn persist_settings(&mut self) {
+        let changed = self.settings.show_grid != self.canvas.show_grid
+            || self.settings.snap != self.canvas.handles.snap
+            || self.settings.edit_on_wall != self.editor.edit_on_wall;
+        if changed {
+            self.settings.show_grid = self.canvas.show_grid;
+            self.settings.snap = self.canvas.handles.snap;
+            self.settings.edit_on_wall = self.editor.edit_on_wall;
+            self.settings.save();
+        }
+    }
+
+    /// Remembers an opened or saved project in the recent list.
+    fn note_recent(&mut self) {
+        if let Some(p) = self.editor.path.clone() {
+            if self.settings.recent.first() != Some(&p) {
+                self.settings.push_recent(&p);
+                self.settings.save();
+            }
+        }
+    }
+
+    /// Carries out an action the user confirmed (or that needed no confirmation).
+    pub fn perform(&mut self, action: Pending) {
+        match action {
+            Pending::Close => {
+                self.close_confirmed = true;
+                self.editor.osc = None;
+            }
+            Pending::New => {
+                self.editor = Editor::new(demo_project(), None);
+                self.editor.set_osc_port(self.settings.osc_port);
+                self.canvas.reset_view();
+                self.panels.welcome = true;
+            }
+            Pending::Open(path) => match Editor::open(&path) {
+                Ok(mut e) => {
+                    e.set_osc_port(self.settings.osc_port);
+                    e.edit_on_wall = self.editor.edit_on_wall;
+                    if let Some(auto) = crate::autosave::recoverable(&path) {
+                        e.recovery = Some(auto);
+                    }
+                    self.editor = e;
+                    self.canvas.reset_view();
+                    self.panels.welcome = false;
+                    self.note_recent();
+                }
+                Err(e) => self.panels.error = Some(format!("{}: {e}", path.display())),
+            },
+        }
+    }
+
+    /// Asks for an action, deferring it behind the unsaved-changes prompt when needed.
+    pub fn request(&mut self, action: Pending) {
+        if self.editor.request(action.clone()) {
+            self.perform(action);
+        }
+    }
+
+    /// Handles the window's close button: with unsaved changes the close is cancelled and
+    /// the prompt opens instead.
+    fn handle_close_request(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) || self.close_confirmed {
+            return;
+        }
+        if self.editor.dirty && self.editor.pending.is_none() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.editor.pending = Some(Pending::Close);
+        } else if self.editor.dirty {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+    }
+
+    /// Files dropped onto any lumen window become sources.
+    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        if !dropped.is_empty() {
+            self.editor.add_files(&dropped);
+            self.panels.welcome = false;
         }
     }
 
@@ -172,46 +293,167 @@ impl LumenApp {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        use egui::{Key, Modifiers};
         let now = Instant::now();
-        let (undo, redo, save, show, escape, delete) = ctx.input_mut(|i| {
-            (
-                i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z),
-                i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
-                    || i.consume_key(
-                        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
-                        egui::Key::Z,
-                    ),
-                i.consume_key(egui::Modifiers::COMMAND, egui::Key::S),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::F10),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Delete),
-            )
-        });
         let typing = ctx.egui_wants_keyboard_input();
-        if undo && !typing {
+        let k = ctx.input_mut(|i| Shortcuts {
+            undo: i.consume_key(Modifiers::COMMAND, Key::Z),
+            redo: i.consume_key(Modifiers::COMMAND, Key::Y)
+                || i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z),
+            save: i.consume_key(Modifiers::COMMAND, Key::S),
+            save_as: i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::S),
+            open: i.consume_key(Modifiers::COMMAND, Key::O),
+            new: i.consume_key(Modifiers::COMMAND, Key::N),
+            duplicate: i.consume_key(Modifiers::COMMAND, Key::D),
+            show: i.consume_key(Modifiers::NONE, Key::F10),
+            escape: i.consume_key(Modifiers::NONE, Key::Escape),
+            delete: i.consume_key(Modifiers::NONE, Key::Delete)
+                || i.consume_key(Modifiers::NONE, Key::Backspace),
+            blackout: i.consume_key(Modifiers::NONE, Key::B),
+            identify: i.consume_key(Modifiers::NONE, Key::I),
+            grid: i.consume_key(Modifiers::NONE, Key::G),
+            snap: i.consume_key(Modifiers::NONE, Key::S),
+            lock: i.consume_key(Modifiers::NONE, Key::L),
+            help: i.consume_key(Modifiers::NONE, Key::Questionmark)
+                || i.consume_key(Modifiers::SHIFT, Key::Slash)
+                || i.consume_key(Modifiers::NONE, Key::F1),
+            reset_view: i.consume_key(Modifiers::NONE, Key::Num0),
+        });
+        if k.undo && !typing {
             self.editor.undo();
         }
-        if redo && !typing {
+        if k.redo && !typing {
             self.editor.redo();
         }
-        if save {
-            self.panels.save(&mut self.editor);
+        if k.save {
+            self.save();
         }
-        if show {
+        if k.save_as {
+            self.save_as();
+        }
+        if k.open {
+            self.open_dialog();
+        }
+        if k.new {
+            self.request(Pending::New);
+        }
+        if k.show {
             if self.editor.show_mode {
                 self.editor.exit_show_mode();
             } else {
                 self.editor.enter_show_mode();
             }
         }
-        if escape {
-            self.editor.press_escape(now, Duration::from_secs(2));
+        if k.escape {
+            if self.panels.help || self.panels.welcome {
+                self.panels.help = false;
+                self.panels.welcome = false;
+            } else {
+                self.editor.press_escape(now, Duration::from_secs(2));
+            }
         }
-        if delete && !typing {
+        if typing {
+            return;
+        }
+        if k.delete {
             self.editor.delete_selection();
         }
+        if k.duplicate {
+            if let Selection::Surface { id, .. } = self.editor.selection.clone() {
+                self.editor.duplicate_surface(&id);
+            }
+        }
+        if k.blackout {
+            let on = self.editor.project.blackout;
+            self.editor
+                .set_param("/show/blackout", lumen_core::params::ParamValue::Bool(!on));
+            self.editor.commit();
+        }
+        if k.identify {
+            self.editor.identify(now);
+        }
+        if k.grid && !self.editor.show_mode {
+            self.canvas.show_grid = !self.canvas.show_grid;
+        }
+        if k.snap && !self.editor.show_mode {
+            self.canvas.handles.snap = !self.canvas.handles.snap;
+        }
+        if k.lock && !self.editor.show_mode {
+            if let Selection::Surface { id, .. } = self.editor.selection.clone() {
+                let locked = self.editor.is_locked(&id);
+                self.editor.set_locked(&id, !locked);
+            }
+        }
+        if k.help {
+            self.panels.help = !self.panels.help;
+        }
+        if k.reset_view {
+            self.canvas.reset_view();
+        }
     }
+
+    /// Save, or Save As when the project has no file yet.
+    pub fn save(&mut self) {
+        if self.editor.path.is_some() {
+            match self.editor.save() {
+                Ok(()) => self.note_recent(),
+                Err(e) => self.panels.error = Some(e),
+            }
+        } else {
+            self.save_as();
+        }
+    }
+
+    /// Save under a new name through the file dialog.
+    pub fn save_as(&mut self) {
+        let suggested = self.editor.path.clone();
+        if let Some(path) = self.panels.dialogs.save_project(suggested.as_deref()) {
+            match self.editor.save_as(&path) {
+                Ok(()) => self.note_recent(),
+                Err(e) => self.panels.error = Some(e),
+            }
+        }
+    }
+
+    /// Open through the file dialog.
+    pub fn open_dialog(&mut self) {
+        if let Some(path) = self.panels.dialogs.pick_project() {
+            self.request(Pending::Open(path));
+        }
+    }
+
+    /// Add media files through the file dialog.
+    pub fn add_media_dialog(&mut self) {
+        let files = self.panels.dialogs.pick_media();
+        if !files.is_empty() {
+            self.editor.add_files(&files);
+        }
+    }
+}
+
+/// Keys pressed this frame.
+#[derive(Debug, Default, Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)]
+struct Shortcuts {
+    undo: bool,
+    redo: bool,
+    save: bool,
+    save_as: bool,
+    open: bool,
+    new: bool,
+    duplicate: bool,
+    show: bool,
+    escape: bool,
+    delete: bool,
+    blackout: bool,
+    identify: bool,
+    grid: bool,
+    snap: bool,
+    lock: bool,
+    help: bool,
+    reset_view: bool,
 }
 
 impl LumenApp {
@@ -229,6 +471,8 @@ impl LumenApp {
             ctx.request_repaint();
         }
         self.editor.maybe_autosave(now);
+        self.handle_close_request(&ctx);
+        self.handle_dropped_files(&ctx);
         self.handle_shortcuts(&ctx);
         let title = self.editor.title();
         if title != self.last_title {
@@ -240,21 +484,105 @@ impl LumenApp {
             let fps = self.fps();
             panels::show_mode_screen(ui, &self.editor, fps);
         } else {
-            panels::top_bar(ui, &mut self.editor, &mut self.panels);
-            panels::left_panel(ui, &mut self.editor);
-            panels::inspector(ui, &mut self.editor, &self.monitors, &mut self.panels);
+            let mut actions = panels::Actions::default();
+            panels::top_bar(
+                ui,
+                &mut self.editor,
+                &mut self.panels,
+                &mut self.canvas,
+                &mut actions,
+            );
+            panels::status_bar(ui, &self.editor, &self.canvas, self.fps(), now);
+            panels::left_panel(ui, &mut self.editor, &mut actions);
+            panels::inspector(
+                ui,
+                &mut self.editor,
+                &self.monitors,
+                &mut self.panels,
+                &mut actions,
+            );
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(egui::Color32::from_gray(18)))
                 .show(ui, |ui| {
                     canvas::show(ui, &mut self.editor, &mut self.canvas, self.surface_format);
                 });
-            panels::dialogs(&ctx, &mut self.editor, &mut self.panels);
+            panels::dialogs(
+                &ctx,
+                &mut self.editor,
+                &mut self.panels,
+                &self.monitors,
+                &self.settings,
+                &mut actions,
+            );
+            self.run_actions(actions, &ctx);
+            self.drop_hover = ctx.input(|i| !i.raw.hovered_files.is_empty());
+            if self.drop_hover {
+                panels::drop_overlay(&ctx);
+            }
         }
-        outputs::show_output_windows(&ctx, &mut self.editor, &self.monitors, self.surface_format);
+        outputs::show_output_windows(
+            &ctx,
+            &mut self.editor,
+            &self.monitors,
+            self.surface_format,
+            &mut self.wall,
+            self.canvas.handles.snap,
+            if self.canvas.show_grid {
+                self.canvas.grid_divisions
+            } else {
+                0
+            },
+        );
+        self.persist_settings();
+        if self.close_confirmed {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
 
-        // Keep live sources and the show-mode status fresh without spinning when idle.
-        if !self.editor.sources.live_ids().is_empty() || self.editor.show_mode {
+        // Keep live sources, identify flashes and the show-mode status fresh without
+        // spinning when idle.
+        if !self.editor.sources.live_ids().is_empty()
+            || self.editor.show_mode
+            || self.editor.identify_until.is_some()
+        {
             ctx.request_repaint_after(Duration::from_millis(16));
+        }
+    }
+
+    /// Runs the actions the panels asked for (they cannot borrow the app themselves).
+    fn run_actions(&mut self, actions: panels::Actions, ctx: &egui::Context) {
+        let _ = ctx;
+        if actions.save {
+            self.save();
+        }
+        if actions.save_as {
+            self.save_as();
+        }
+        if actions.open {
+            self.open_dialog();
+        }
+        if actions.new {
+            self.request(Pending::New);
+        }
+        if let Some(path) = actions.open_path {
+            self.request(Pending::Open(path));
+        }
+        if actions.add_media {
+            self.add_media_dialog();
+        }
+        if actions.create_outputs {
+            self.editor
+                .create_outputs_for_monitors(&self.monitors, true);
+            self.panels.welcome = false;
+        }
+        if let Some(proceed) = actions.resolve_pending {
+            if let Some(action) = self.editor.resolve_pending(proceed) {
+                self.perform(action);
+            }
+        }
+        if actions.skip_welcome {
+            self.settings.skip_welcome = true;
+            self.settings.save();
+            self.panels.welcome = false;
         }
     }
 }

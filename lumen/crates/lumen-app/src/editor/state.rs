@@ -5,7 +5,7 @@ use lumen_control::OscServer;
 use lumen_core::geom::Vec2;
 use lumen_core::mask::Mask;
 use lumen_core::params::{ParamAddress, ParamValue};
-use lumen_core::project::{is_valid_id, Output, Project, Source, SourceKind, Surface, TestPattern};
+use lumen_core::project::{Output, Project, Source, SourceKind, Surface, TestPattern};
 use lumen_core::undo::{Command, History, SetValue};
 use lumen_core::warp::WarpKind;
 use lumen_render::scene::MaskCache;
@@ -114,6 +114,17 @@ impl Command<Project> for Snapshot {
     }
 }
 
+/// Source kind for a file picked or dropped, by extension.
+pub fn source_kind_for(path: &Path) -> Option<SourceKind> {
+    let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
+    match ext.as_str() {
+        "png" | "jpg" | "jpeg" => Some(SourceKind::Image {
+            path: path.to_string_lossy().into_owned(),
+        }),
+        _ => None,
+    }
+}
+
 /// The editor's model.
 pub struct Editor {
     /// Current project.
@@ -148,6 +159,42 @@ pub struct Editor {
     pub recovery: Option<PathBuf>,
     /// Last known outer position (points) of each open output window.
     pub window_positions: std::collections::HashMap<String, (f32, f32)>,
+    /// Outputs flash their id and colour until this instant.
+    pub identify_until: Option<Instant>,
+    /// Additional surfaces selected with Shift-click (the primary is in `selection`).
+    pub extra_selected: Vec<String>,
+    /// An action waiting for the user to decide about unsaved changes.
+    pub pending: Option<Pending>,
+    /// Handles are drawn on the output windows while editing.
+    pub edit_on_wall: bool,
+}
+
+/// Something the user asked for that would lose unsaved changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pending {
+    /// Quit the application.
+    Close,
+    /// Start a new project.
+    New,
+    /// Open this project.
+    Open(PathBuf),
+}
+
+/// Geometry operations offered by the Align menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlignOp {
+    /// Mirror left/right.
+    FlipHorizontal,
+    /// Mirror top/bottom.
+    FlipVertical,
+    /// Quarter turn clockwise.
+    RotateQuarter,
+    /// Cover the whole output.
+    FitOutput,
+    /// Move to the output centre.
+    Centre,
+    /// Largest centred rectangle with the source's aspect ratio.
+    MatchSourceAspect,
 }
 
 impl Editor {
@@ -182,6 +229,10 @@ impl Editor {
             last_patch: None,
             recovery: None,
             window_positions: std::collections::HashMap::new(),
+            identify_until: None,
+            extra_selected: Vec::new(),
+            pending: None,
+            edit_on_wall: true,
         }
         .with_sources(sources)
     }
@@ -380,24 +431,9 @@ impl Editor {
         did
     }
 
-    /// A fresh id with `prefix` that no item of that kind uses.
+    /// A fresh id with `prefix` that nothing in the project uses.
     pub fn fresh_id(&self, prefix: &str) -> String {
-        let taken = |id: &str| {
-            self.project.sources.iter().any(|s| s.id == id)
-                || self.project.outputs.iter().any(|o| o.id == id)
-                || self.project.surfaces.iter().any(|s| s.id == id)
-        };
-        if !taken(prefix) && is_valid_id(prefix) {
-            return prefix.to_string();
-        }
-        // Bounded: at most len+2 candidates can be taken.
-        (2..self.project.sources.len()
-            + self.project.outputs.len()
-            + self.project.surfaces.len()
-            + 3)
-            .map(|n| format!("{prefix}-{n}"))
-            .find(|id| !taken(id))
-            .unwrap_or_else(|| prefix.to_string())
+        self.project.fresh_id(prefix)
     }
 
     /// Adds an output and selects it.
@@ -441,6 +477,7 @@ impl Editor {
                 crop: lumen_core::project::Crop::default(),
                 warp: WarpKind::default(),
                 masks: Vec::new(),
+                locked: false,
             });
         });
         self.selection = Selection::Surface { id, mask: None };
@@ -461,8 +498,21 @@ impl Editor {
         id
     }
 
-    /// Removes whatever is selected (a mask, a surface or an output with its surfaces).
+    /// Removes whatever is selected (a mask, a surface or an output with its surfaces),
+    /// plus every extra Shift-selected surface.
     pub fn delete_selection(&mut self) {
+        if !self.extra_selected.is_empty() {
+            let mut ids = self.extra_selected.clone();
+            if let Selection::Surface { id, mask: None } = &self.selection {
+                ids.push(id.clone());
+            }
+            self.edit(|p| p.surfaces.retain(|s| !ids.contains(&s.id)));
+            self.extra_selected.clear();
+            if matches!(&self.selection, Selection::Surface { mask: None, .. }) {
+                self.selection = Selection::None;
+            }
+            return;
+        }
         match self.selection.clone() {
             Selection::None => {}
             Selection::Output(id) => {
@@ -514,6 +564,366 @@ impl Editor {
         };
     }
 
+    /// Surfaces that count as selected: the primary plus the Shift-selected extras.
+    pub fn selected_surfaces(&self) -> Vec<String> {
+        let mut ids = self.extra_selected.clone();
+        if let Selection::Surface { id, .. } = &self.selection {
+            if !ids.contains(id) {
+                ids.insert(0, id.clone());
+            }
+        }
+        ids
+    }
+
+    /// Selects a surface; with `extend` it joins the current selection instead.
+    pub fn select_surface(&mut self, id: &str, extend: bool) {
+        if extend {
+            if let Selection::Surface { id: current, .. } = &self.selection {
+                if current == id {
+                    return;
+                }
+                let current = current.clone();
+                if !self.extra_selected.contains(&current) {
+                    self.extra_selected.push(current);
+                }
+            }
+            self.extra_selected.retain(|s| s != id);
+            self.selection = Selection::Surface {
+                id: id.to_string(),
+                mask: None,
+            };
+        } else {
+            self.extra_selected.clear();
+            self.selection = Selection::Surface {
+                id: id.to_string(),
+                mask: None,
+            };
+        }
+    }
+
+    /// Duplicates a surface and selects the copy.
+    pub fn duplicate_surface(&mut self, id: &str) -> Option<String> {
+        if self.show_mode || self.project.surface(id).is_none() {
+            return None;
+        }
+        let mut new_id = None;
+        let id = id.to_string();
+        self.edit(|p| new_id = p.duplicate_surface(&id));
+        if let Some(n) = &new_id {
+            self.selection = Selection::Surface {
+                id: n.clone(),
+                mask: None,
+            };
+            self.extra_selected.clear();
+        }
+        new_id
+    }
+
+    /// Locks or unlocks a surface.
+    pub fn set_locked(&mut self, id: &str, locked: bool) {
+        let id = id.to_string();
+        self.edit(|p| {
+            if let Some(s) = p.surface_mut(&id) {
+                s.locked = locked;
+            }
+        });
+    }
+
+    /// True when the surface exists and is locked.
+    pub fn is_locked(&self, id: &str) -> bool {
+        self.project.surface(id).is_some_and(|s| s.locked)
+    }
+
+    /// Renames the selected kind of item, keeping the selection on it.
+    pub fn rename(&mut self, old: &str, new: &str) -> Result<(), String> {
+        if self.show_mode {
+            return Err("locked in show mode".into());
+        }
+        let new = new.trim().to_string();
+        if new == old {
+            return Ok(());
+        }
+        let before = self.project.clone();
+        let result = if self.project.surface(old).is_some() {
+            self.project.rename_surface(old, &new)
+        } else if self.project.output(old).is_some() {
+            self.project.rename_output(old, &new)
+        } else if self.project.source(old).is_some() {
+            self.project.rename_source(old, &new)
+        } else {
+            return Err(format!("nothing is called {old:?}"));
+        };
+        match result {
+            Ok(()) => {
+                let after = std::mem::replace(&mut self.project, before);
+                self.edit(move |p| *p = after);
+                self.selection = match self.selection.clone() {
+                    Selection::Surface { id, mask } if id == old => Selection::Surface {
+                        id: new.clone(),
+                        mask,
+                    },
+                    Selection::Output(id) if id == old => Selection::Output(new.clone()),
+                    other => other,
+                };
+                for o in &mut self.open_outputs {
+                    if *o == old {
+                        o.clone_from(&new);
+                    }
+                }
+                self.reload_sources();
+                Ok(())
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Moves a surface one step up (`+1`) or down (`-1`) in draw order among its output's
+    /// surfaces, renumbering `z` so the order is unambiguous.
+    pub fn move_surface(&mut self, id: &str, delta: i32) {
+        let Some(output) = self.project.surface(id).map(|s| s.output.clone()) else {
+            return;
+        };
+        let mut ordered: Vec<String> = self
+            .project
+            .surfaces_for_output(&output)
+            .iter()
+            .map(|s| s.id.clone())
+            .collect();
+        let Some(i) = ordered.iter().position(|s| s == id) else {
+            return;
+        };
+        let j = (i as i32 + delta).clamp(0, ordered.len() as i32 - 1) as usize;
+        if i == j {
+            return;
+        }
+        let moved = ordered.remove(i);
+        ordered.insert(j, moved);
+        self.edit(|p| {
+            for (z, sid) in ordered.iter().enumerate() {
+                if let Some(s) = p.surface_mut(sid) {
+                    s.z = z as i32;
+                }
+            }
+        });
+    }
+
+    /// Sends a surface to the top or bottom of its output's stack.
+    pub fn send_surface(&mut self, id: &str, to_front: bool) {
+        let n = self.project.surfaces.len() as i32;
+        self.move_surface(id, if to_front { n } else { -n });
+    }
+
+    /// Applies an Align operation to a surface's warp.
+    pub fn align(&mut self, id: &str, op: AlignOp) -> bool {
+        let Some(surface) = self.project.surface(id).cloned() else {
+            return false;
+        };
+        let Some(output) = self.project.output(&surface.output) else {
+            return false;
+        };
+        let output_aspect = f64::from(output.width.max(1)) / f64::from(output.height.max(1));
+        let warp = match op {
+            AlignOp::FlipHorizontal => surface.warp.flip_horizontal(),
+            AlignOp::FlipVertical => surface.warp.flip_vertical(),
+            AlignOp::RotateQuarter => surface.warp.rotate_quarter(output_aspect),
+            AlignOp::FitOutput => WarpKind::default(),
+            AlignOp::Centre => surface.warp.centred(),
+            AlignOp::MatchSourceAspect => {
+                let source_aspect = self
+                    .sources
+                    .frame(&surface.source)
+                    .map_or(output_aspect, |f| {
+                        f64::from(f.width.max(1)) / f64::from(f.height.max(1))
+                    });
+                let crop_aspect =
+                    source_aspect * surface.crop.w.max(1e-6) / surface.crop.h.max(1e-6);
+                WarpKind::fit_aspect(crop_aspect, output_aspect)
+            }
+        };
+        let ok = self.set_warp(id, warp);
+        self.commit();
+        ok
+    }
+
+    /// Flashes every output's identity for three seconds.
+    pub fn identify(&mut self, now: Instant) {
+        self.identify_until = Some(now + Duration::from_secs(3));
+    }
+
+    /// True while an identify flash is running (and clears it once it has expired).
+    pub fn identify_active(&mut self, now: Instant) -> bool {
+        match self.identify_until {
+            Some(t) if now < t => true,
+            Some(_) => {
+                self.identify_until = None;
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Creates one full-size, placed output per monitor (skipping the first, which is
+    /// usually the editor's screen, when `skip_primary`), each with a grid surface. Returns
+    /// the new output ids.
+    pub fn create_outputs_for_monitors(
+        &mut self,
+        monitors: &[super::MonitorInfo],
+        skip_primary: bool,
+    ) -> Vec<String> {
+        let mut ids = Vec::new();
+        let chosen: Vec<&super::MonitorInfo> = monitors
+            .iter()
+            .skip(usize::from(skip_primary && monitors.len() > 1))
+            .collect();
+        if chosen.is_empty() {
+            return ids;
+        }
+        if self.project.sources.is_empty() {
+            self.add_source(SourceKind::TestPattern {
+                pattern: TestPattern::Grid,
+            });
+        }
+        let source = self.project.sources[0].id.clone();
+        for (i, m) in chosen.iter().enumerate() {
+            let id = self.fresh_id(&format!("projector-{}", i + 1));
+            let surface_id = self.fresh_id(&format!("{id}-surface"));
+            let (name, x, y, w, h) = (m.name.clone(), m.x, m.y, m.width, m.height);
+            let (oid, sid, src) = (id.clone(), surface_id, source.clone());
+            self.edit(move |p| {
+                p.outputs.push(Output {
+                    id: oid.clone(),
+                    width: w.max(1),
+                    height: h.max(1),
+                    enabled: true,
+                    blend: lumen_core::blend::EdgeBlend::none(),
+                    color: lumen_core::project::ColorAdjust::default(),
+                    placement: Some(lumen_core::project::Placement {
+                        monitor: name,
+                        x,
+                        y,
+                    }),
+                });
+                p.surfaces.push(Surface {
+                    id: sid,
+                    output: oid,
+                    source: src,
+                    z: 0,
+                    visible: true,
+                    opacity: 1.0,
+                    blend_mode: lumen_core::project::BlendMode::Normal,
+                    crop: lumen_core::project::Crop::default(),
+                    warp: WarpKind::default(),
+                    masks: Vec::new(),
+                    locked: false,
+                });
+            });
+            self.open_outputs.push(id.clone());
+            ids.push(id);
+        }
+        if let Some(first) = ids.first() {
+            self.selection = Selection::Output(first.clone());
+        }
+        self.history.clear();
+        self.dirty = true;
+        ids
+    }
+
+    /// Adds sources for dropped or picked files. Images become image sources; a surface is
+    /// added for each on the selected output (or the first output). Returns how many were
+    /// added.
+    pub fn add_files(&mut self, paths: &[PathBuf]) -> usize {
+        let mut added = 0;
+        let target = match &self.selection {
+            Selection::Output(id) => Some(id.clone()),
+            Selection::Surface { id, .. } => self.project.surface(id).map(|s| s.output.clone()),
+            Selection::None => self.project.outputs.first().map(|o| o.id.clone()),
+        };
+        for path in paths {
+            let Some(kind) = source_kind_for(path) else {
+                self.status = format!("{}: unsupported file type", path.display());
+                continue;
+            };
+            let stem = path
+                .file_stem()
+                .map_or_else(|| "file".into(), |s| s.to_string_lossy().into_owned());
+            let id = self.fresh_id(&stem);
+            let relative = self.relative_path(path);
+            let kind = match kind {
+                SourceKind::Image { .. } => SourceKind::Image { path: relative },
+                other => other,
+            };
+            self.edit(|p| {
+                p.sources.push(Source {
+                    id: id.clone(),
+                    kind,
+                });
+            });
+            if let Some(output) = &target {
+                let sid = self.fresh_id(&format!("{id}-surface"));
+                let (oid, src, sid_for_edit) = (output.clone(), id.clone(), sid.clone());
+                let z = self.project.surfaces_for_output(output).len() as i32;
+                self.edit(move |p| {
+                    p.surfaces.push(Surface {
+                        id: sid_for_edit,
+                        output: oid,
+                        source: src,
+                        z,
+                        visible: true,
+                        opacity: 1.0,
+                        blend_mode: lumen_core::project::BlendMode::Normal,
+                        crop: lumen_core::project::Crop::default(),
+                        warp: WarpKind::default(),
+                        masks: Vec::new(),
+                        locked: false,
+                    });
+                });
+                self.selection = Selection::Surface {
+                    id: sid,
+                    mask: None,
+                };
+            }
+            added += 1;
+        }
+        if added > 0 {
+            self.reload_sources();
+            self.status = format!("added {added} source(s)");
+        }
+        added
+    }
+
+    /// Path to store in the project: relative to the project folder when possible.
+    pub fn relative_path(&self, path: &Path) -> String {
+        let base = self.base_dir();
+        let base = std::fs::canonicalize(&base).unwrap_or(base);
+        let full = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        full.strip_prefix(&base)
+            .unwrap_or(&full)
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Asks to do `action`; returns true when it may proceed now, false when the user must
+    /// first decide about unsaved changes (the action is parked in `pending`).
+    pub fn request(&mut self, action: Pending) -> bool {
+        if self.dirty {
+            self.pending = Some(action);
+            false
+        } else {
+            true
+        }
+    }
+
+    /// Resolves a pending action: `discard` drops the changes, otherwise they were saved.
+    /// Returns the action to carry out, if any.
+    pub fn resolve_pending(&mut self, proceed: bool) -> Option<Pending> {
+        let action = self.pending.take();
+        if proceed {
+            action
+        } else {
+            None
+        }
+    }
+
     /// Saves to the current path.
     pub fn save(&mut self) -> Result<(), String> {
         let Some(path) = self.path.clone() else {
@@ -534,6 +944,11 @@ impl Editor {
         self.autosave.mark_saved(Instant::now());
         self.status = format!("saved {}", path.display());
         Ok(())
+    }
+
+    /// Time until the next autosave would be due (zero when due or not applicable).
+    pub fn autosave_due_in(&self, now: Instant) -> Duration {
+        self.autosave.due_in(now)
     }
 
     /// Writes the autosave file if one is due. Returns true when it wrote.
@@ -845,7 +1260,7 @@ mod tests {
             "spout"
         );
         assert!(e.sources.frame("solid").is_some());
-        assert_eq!(e.fresh_id("bad id"), "bad id-2");
+        assert_eq!(e.fresh_id("bad id"), "badid");
     }
 
     #[test]
@@ -993,6 +1408,237 @@ mod tests {
         e.recovery = Some(dir.path().join("missing.autosave"));
         assert!(!e.recover());
         assert!(e.status.contains("cannot recover"));
+    }
+
+    #[test]
+    fn multi_select_and_duplicate_and_lock() {
+        let mut e = editor();
+        e.select_surface("logo", false);
+        e.select_surface("wall-right", true);
+        assert_eq!(e.selected_surfaces(), ["wall-right", "logo"]);
+        e.select_surface("wall-right", true);
+        assert_eq!(
+            e.selected_surfaces(),
+            ["wall-right", "logo"],
+            "re-selecting the primary is a no-op"
+        );
+        e.select_surface("logo", true);
+        assert_eq!(
+            e.selected_surfaces(),
+            ["logo", "wall-right"],
+            "swapped roles, still two"
+        );
+        e.select_surface("wall-left", false);
+        assert_eq!(e.selected_surfaces(), ["wall-left"]);
+        e.select_surface("logo", true);
+        e.delete_selection();
+        assert!(e.project.surface("logo").is_none() && e.project.surface("wall-left").is_none());
+        assert_eq!(e.selection, Selection::None);
+        assert!(e.extra_selected.is_empty());
+        e.undo();
+        assert_eq!(e.project.surfaces.len(), 3);
+
+        let copy = e.duplicate_surface("logo").unwrap();
+        assert_eq!(copy, "logo-copy");
+        assert_eq!(
+            e.selection,
+            Selection::Surface {
+                id: copy.clone(),
+                mask: None
+            }
+        );
+        assert!(e.duplicate_surface("ghost").is_none());
+        e.set_locked(&copy, true);
+        assert!(e.is_locked(&copy) && !e.is_locked("logo") && !e.is_locked("ghost"));
+        e.enter_show_mode();
+        assert!(e.duplicate_surface("logo").is_none());
+    }
+
+    #[test]
+    fn rename_updates_selection_and_windows() {
+        let mut e = editor();
+        e.selection = Selection::Surface {
+            id: "logo".into(),
+            mask: Some(0),
+        };
+        e.rename("logo", " badge ").unwrap();
+        assert_eq!(
+            e.selection,
+            Selection::Surface {
+                id: "badge".into(),
+                mask: Some(0)
+            }
+        );
+        assert!(e.project.surface("badge").is_some());
+        e.open_outputs.push("left".into());
+        e.selection = Selection::Output("left".into());
+        e.rename("left", "L").unwrap();
+        assert_eq!(e.selection, Selection::Output("L".into()));
+        assert_eq!(e.open_outputs, ["L"]);
+        assert_eq!(e.project.surfaces[0].output, "L");
+        e.rename("grid", "g").unwrap();
+        assert!(e.sources.frame("g").is_some());
+        assert!(e.rename("g", "bad id").is_err());
+        assert!(e.rename("ghost", "x").is_err());
+        assert!(e.rename("g", "g").is_ok());
+        assert!(e.undo(), "a rename is one undo step");
+        assert!(e.project.source("grid").is_some());
+        e.enter_show_mode();
+        assert!(e.rename("grid", "x").is_err());
+    }
+
+    #[test]
+    fn ordering_and_alignment() {
+        let mut e = editor();
+        let order = |e: &Editor| {
+            e.project
+                .surfaces_for_output("right")
+                .iter()
+                .map(|s| s.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(&e), ["wall-right", "logo"]);
+        e.move_surface("logo", -1);
+        assert_eq!(order(&e), ["logo", "wall-right"]);
+        e.move_surface("logo", -1);
+        assert_eq!(order(&e), ["logo", "wall-right"], "already at the bottom");
+        e.send_surface("logo", true);
+        assert_eq!(order(&e), ["wall-right", "logo"]);
+        e.send_surface("logo", false);
+        assert_eq!(order(&e), ["logo", "wall-right"]);
+        e.move_surface("ghost", 1);
+
+        for op in [
+            AlignOp::FlipHorizontal,
+            AlignOp::FlipVertical,
+            AlignOp::RotateQuarter,
+            AlignOp::Centre,
+            AlignOp::MatchSourceAspect,
+            AlignOp::FitOutput,
+        ] {
+            assert!(e.align("logo", op), "{op:?}");
+            assert!(e.project.is_valid());
+        }
+        assert_eq!(e.project.surface("logo").unwrap().warp, WarpKind::default());
+        assert!(!e.align("ghost", AlignOp::Centre));
+        let mut orphan = editor();
+        orphan.project.surfaces[2].output = "ghost".into();
+        assert!(!orphan.align("logo", AlignOp::Centre));
+        let mut no_frame = editor();
+        no_frame.project.surfaces[2].source = "ghost".into();
+        assert!(
+            no_frame.align("logo", AlignOp::MatchSourceAspect),
+            "falls back to the output aspect"
+        );
+    }
+
+    #[test]
+    fn identify_and_monitor_outputs() {
+        let mut e = Editor::new(Project::default(), None);
+        let t = Instant::now();
+        assert!(!e.identify_active(t));
+        e.identify(t);
+        assert!(e.identify_active(t + Duration::from_secs(1)));
+        assert!(!e.identify_active(t + Duration::from_secs(4)));
+        assert!(e.identify_until.is_none());
+
+        let monitors = vec![
+            super::super::MonitorInfo {
+                name: "a".into(),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                scale: 1.0,
+            },
+            super::super::MonitorInfo {
+                name: "b".into(),
+                x: 1920,
+                y: 0,
+                width: 1280,
+                height: 720,
+                scale: 1.0,
+            },
+            super::super::MonitorInfo {
+                name: "c".into(),
+                x: 3200,
+                y: 0,
+                width: 0,
+                height: 0,
+                scale: 1.0,
+            },
+        ];
+        let ids = e.create_outputs_for_monitors(&monitors, true);
+        assert_eq!(ids, ["projector-1", "projector-2"]);
+        assert_eq!(
+            e.project.outputs[0].placement.as_ref().unwrap().monitor,
+            "b"
+        );
+        assert_eq!(
+            (e.project.outputs[1].width, e.project.outputs[1].height),
+            (1, 1),
+            "zero sizes are clamped"
+        );
+        assert_eq!(e.project.surfaces.len(), 2);
+        assert_eq!(e.open_outputs, ids);
+        assert_eq!(e.selection, Selection::Output("projector-1".into()));
+        assert!(e.dirty && !e.history.can_undo());
+        assert!(e.project.is_valid());
+        let more = e.create_outputs_for_monitors(&monitors[..1], true);
+        assert_eq!(
+            more,
+            ["projector-1-2"],
+            "a single monitor is used even when skipping the primary"
+        );
+        assert!(e.create_outputs_for_monitors(&[], false).is_empty());
+    }
+
+    #[test]
+    fn files_become_sources_and_pending_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let img = dir.path().join("photo.PNG");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]))
+            .save(&img)
+            .unwrap();
+        let mut e = editor();
+        e.path = Some(dir.path().join("show.lumen.toml"));
+        e.selection = Selection::Output("right".into());
+        assert_eq!(e.add_files(&[img.clone(), dir.path().join("notes.txt")]), 1);
+        assert!(e.status.contains("unsupported") || e.status.contains("added"));
+        let src = e.project.source("photo").unwrap();
+        assert_eq!(
+            src.kind,
+            SourceKind::Image {
+                path: "photo.PNG".into()
+            },
+            "stored relative to the project"
+        );
+        assert_eq!(
+            e.selection,
+            Selection::Surface {
+                id: "photo-surface".into(),
+                mask: None
+            }
+        );
+        assert_eq!(e.project.surface("photo-surface").unwrap().output, "right");
+        assert!(e.sources.frame("photo").is_some());
+        assert!(source_kind_for(Path::new("x.mov")).is_none());
+        assert!(source_kind_for(Path::new("noext")).is_none());
+        let mut empty = Editor::new(Project::default(), None);
+        assert_eq!(empty.add_files(&[img]), 1, "no output: source only");
+        assert!(empty.project.surfaces.is_empty());
+
+        assert!(!e.request(Pending::Close), "add_files dirtied the project");
+        e.pending = None;
+        e.dirty = false;
+        assert!(e.request(Pending::New));
+        e.dirty = true;
+        assert!(!e.request(Pending::Open(dir.path().join("o.toml"))));
+        assert!(e.pending.is_some());
+        assert_eq!(e.resolve_pending(false), None);
+        assert!(e.pending.is_none());
+        e.request(Pending::Close);
+        assert_eq!(e.resolve_pending(true), Some(Pending::Close));
     }
 
     #[test]

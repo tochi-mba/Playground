@@ -1,11 +1,14 @@
 //! Output windows: one borderless, always-on-top viewport per open output.
 
+use super::handles::{self, HandleState, Mapping};
 use super::{monitor_at, physical_to_points, scene_for, Editor, MonitorInfo};
-use eframe::egui;
+use eframe::egui::{self, Sense};
 use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, ScreenDescriptor};
 use lumen_render::gpu::GpuRenderer;
 use lumen_render::Scene;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Paints a scene into the current egui render pass through the shared [`GpuRenderer`].
 pub struct ScenePaint {
@@ -114,14 +117,57 @@ pub fn window_spec(output: &lumen_core::project::Output, monitors: &[MonitorInfo
     }
 }
 
+/// Idle time after which the pointer disappears over an output window.
+pub const CURSOR_HIDE_AFTER: Duration = Duration::from_secs(2);
+
+/// Per-window interaction state.
+#[derive(Debug)]
+pub struct OutputUiState {
+    /// Handle interaction on the wall.
+    pub handles: HandleState,
+    /// Last pointer movement seen on this window.
+    pub last_move: Instant,
+    /// Last pointer position seen.
+    pub last_pos: Option<egui::Pos2>,
+}
+
+impl Default for OutputUiState {
+    fn default() -> Self {
+        Self {
+            handles: HandleState::default(),
+            last_move: Instant::now(),
+            last_pos: None,
+        }
+    }
+}
+
+/// True when the pointer has not moved for [`CURSOR_HIDE_AFTER`].
+pub fn cursor_idle(state: &mut OutputUiState, pos: Option<egui::Pos2>, now: Instant) -> bool {
+    if pos != state.last_pos {
+        state.last_pos = pos;
+        state.last_move = now;
+    }
+    now.duration_since(state.last_move) >= CURSOR_HIDE_AFTER
+}
+
 /// Shows every open output window.
+///
+/// Outside show mode the windows carry the same handles as the canvas when
+/// `editor.edit_on_wall` is set, so a surface can be calibrated while looking at the wall.
+#[allow(clippy::too_many_lines)]
 pub fn show_output_windows(
     ctx: &egui::Context,
     editor: &mut Editor,
     monitors: &[MonitorInfo],
     format: wgpu::TextureFormat,
+    ui_state: &mut HashMap<String, OutputUiState>,
+    snap: bool,
+    grid: u32,
 ) {
     let ids = editor.open_outputs.clone();
+    ui_state.retain(|k, _| ids.contains(k));
+    let now = Instant::now();
+    let identify = editor.identify_active(now);
     for id in ids {
         let Some(output) = editor.project.output(&id).cloned() else {
             editor.open_outputs.retain(|o| *o != id);
@@ -144,11 +190,34 @@ pub fn show_output_windows(
         let viewport_id = egui::ViewportId::from_hash_of(("lumen-output", &id));
         let mut close = false;
         let mut outer = None;
+        let index = editor
+            .project
+            .outputs
+            .iter()
+            .position(|o| o.id == id)
+            .unwrap_or(0);
+        let state = ui_state.entry(id.clone()).or_default();
+        state.handles.snap = snap;
+        state.handles.grid = 0;
+        let editing = !editor.show_mode && editor.edit_on_wall;
         ctx.show_viewport_immediate(viewport_id, builder, |ui, class| {
             let rect = ui.max_rect();
             ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
             if let Some(scene) = &scene {
                 paint_scene(ui, rect, format!("output:{id}"), Arc::clone(scene), format);
+            }
+            if editing {
+                let response = ui.allocate_rect(rect, Sense::click_and_drag());
+                let map = Mapping { rect };
+                state.handles.grid = grid;
+                handles::interact(ui, editor, &mut state.handles, &response, &map, &id);
+            }
+            if identify {
+                handles::draw_identify(ui.painter(), rect, &id, output.width, output.height, index);
+            }
+            let pos = ui.input(|i| i.pointer.hover_pos());
+            if cursor_idle(state, pos, now) || editor.show_mode {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::None);
             }
             let info = ui.input(|i| i.viewport().clone());
             close = info.close_requested();
@@ -187,6 +256,27 @@ mod tests {
             color: lumen_core::project::ColorAdjust::default(),
             placement,
         }
+    }
+
+    #[test]
+    fn cursor_hides_after_idle_and_returns_on_movement() {
+        let mut s = OutputUiState::default();
+        let t = Instant::now();
+        assert!(!cursor_idle(&mut s, Some(egui::Pos2::new(1.0, 1.0)), t));
+        assert!(cursor_idle(
+            &mut s,
+            Some(egui::Pos2::new(1.0, 1.0)),
+            t + Duration::from_secs(3)
+        ));
+        assert!(!cursor_idle(
+            &mut s,
+            Some(egui::Pos2::new(2.0, 1.0)),
+            t + Duration::from_secs(3)
+        ));
+        assert!(
+            !cursor_idle(&mut s, None, t + Duration::from_secs(4)),
+            "leaving the window counts as movement"
+        );
     }
 
     #[test]

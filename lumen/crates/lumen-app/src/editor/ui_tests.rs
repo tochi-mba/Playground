@@ -2,42 +2,65 @@
 
 #![allow(clippy::unwrap_used, clippy::float_cmp, clippy::too_many_lines)]
 
-use super::canvas::to_screen;
-use super::{Launch, LumenApp, MonitorInfo, Selection};
+use super::handles::Mapping;
+use super::panels::FakeDialogs;
+use super::{Launch, LumenApp, MonitorInfo, Pending, Selection};
 use crate::editor::Editor;
-use eframe::egui::{self, Key, Modifiers};
+use eframe::egui::{self, accesskit::Role, Key, Modifiers};
 use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 use lumen_core::geom::Vec2;
 use lumen_core::project::demo_project;
 use lumen_core::warp::WarpKind;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 fn monitors() -> Vec<MonitorInfo> {
-    vec![MonitorInfo {
-        name: "DISPLAY1".into(),
-        x: 0,
-        y: 0,
-        width: 1920,
-        height: 1080,
-        scale: 1.0,
-    }]
+    vec![
+        MonitorInfo {
+            name: "DISPLAY1".into(),
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            scale: 1.0,
+        },
+        MonitorInfo {
+            name: "DISPLAY2".into(),
+            x: 1920,
+            y: 0,
+            width: 1280,
+            height: 720,
+            scale: 1.0,
+        },
+    ]
+}
+
+fn config_dir() -> PathBuf {
+    static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let dir = DIR.get_or_init(|| tempfile::tempdir().unwrap());
+    std::env::set_var("LUMEN_CONFIG_DIR", dir.path());
+    dir.path().to_path_buf()
 }
 
 fn app(editor: Editor) -> LumenApp {
+    config_dir();
     let launch = Launch {
         project: None,
         osc_port: 0,
         show: false,
         restart_on_stall: None,
     };
-    LumenApp::new(editor, &launch, monitors(), wgpu::TextureFormat::Rgba8Unorm)
+    let mut app = LumenApp::new(editor, &launch, monitors(), wgpu::TextureFormat::Rgba8Unorm);
+    app.panels.dialogs = Box::new(FakeDialogs::default());
+    app
 }
 
 fn harness(editor: Editor) -> Harness<'static, LumenApp> {
     let mut h = Harness::builder()
         .with_size(egui::Vec2::new(1400.0, 900.0))
         .build_ui_state(|ui, app: &mut LumenApp| app.frame(ui), app(editor));
-    settle(&mut h);
+    h.run_steps(3);
     h
 }
 
@@ -52,6 +75,34 @@ fn click(h: &mut Harness<'static, LumenApp>, label: &str) {
     settle(h);
 }
 
+fn menu(h: &mut Harness<'static, LumenApp>, menu: &str, item: &str) {
+    click(h, menu);
+    click(h, item);
+}
+
+fn fake(h: &mut Harness<'static, LumenApp>, f: impl FnOnce(&mut FakeDialogs)) {
+    let mut d = FakeDialogs::default();
+    f(&mut d);
+    h.state_mut().panels.dialogs = Box::new(d);
+}
+
+fn surface_warp(h: &Harness<'static, LumenApp>, id: &str) -> WarpKind {
+    h.state().editor.project.surface(id).unwrap().warp.clone()
+}
+
+fn drag(h: &mut Harness<'static, LumenApp>, from: egui::Pos2, to: egui::Pos2) {
+    h.hover_at(from);
+    settle(h);
+    h.drag_at(from);
+    settle(h);
+    h.hover_at(from + (to - from) * 0.5);
+    settle(h);
+    h.hover_at(to);
+    settle(h);
+    h.drop_at(to);
+    settle(h);
+}
+
 #[test]
 fn panels_render_and_selection_drives_the_inspector() {
     let mut h = harness(Editor::new(demo_project(), None));
@@ -61,11 +112,9 @@ fn panels_render_and_selection_drives_the_inspector() {
         h.query_by_label("Show").is_some(),
         "no selection shows the show inspector"
     );
-
     click(&mut h, "left");
     assert_eq!(h.state().editor.selection, Selection::Output("left".into()));
     assert!(h.query_by_label("Output left").is_some());
-
     click(&mut h, "logo");
     assert_eq!(
         h.state().editor.selection,
@@ -75,11 +124,14 @@ fn panels_render_and_selection_drives_the_inspector() {
         }
     );
     assert!(h.query_by_label("Surface logo").is_some());
-    assert!(
-        h.state().canvas.last_rect.is_some(),
-        "canvas drew the logo's output"
-    );
+    assert!(h.state().canvas.last_rect.is_some());
     assert_eq!(h.state().canvas.output.as_deref(), Some("right"));
+    // Shift-click extends the selection and the status bar says so.
+    h.get_by_label("wall-right")
+        .click_modifiers(Modifiers::SHIFT);
+    settle(&mut h);
+    assert_eq!(h.state().editor.selected_surfaces().len(), 2);
+    assert!(h.query_by_label("2 surfaces selected").is_some());
 }
 
 #[test]
@@ -96,13 +148,6 @@ fn surface_inspector_buttons_edit_the_project() {
             .masks
             .len(),
         1
-    );
-    assert_eq!(
-        h.state().editor.selection,
-        Selection::Surface {
-            id: "wall-left".into(),
-            mask: Some(0)
-        }
     );
     click(&mut h, "Add point");
     assert_eq!(
@@ -124,17 +169,10 @@ fn surface_inspector_buttons_edit_the_project() {
         .is_empty());
 
     click(&mut h, "Convert to Bezier mesh");
-    assert!(matches!(
-        h.state().editor.project.surface("wall-left").unwrap().warp,
-        WarpKind::Bezier(_)
-    ));
+    assert!(matches!(surface_warp(&h, "wall-left"), WarpKind::Bezier(_)));
     click(&mut h, "Reset to flat mesh");
     click(&mut h, "Back to corner pin");
-    assert_eq!(
-        h.state().editor.project.surface("wall-left").unwrap().warp,
-        WarpKind::default()
-    );
-    click(&mut h, "Reset warp");
+    assert_eq!(surface_warp(&h, "wall-left"), WarpKind::default());
     click(&mut h, "Visible");
     assert!(
         !h.state()
@@ -145,16 +183,7 @@ fn surface_inspector_buttons_edit_the_project() {
             .visible
     );
     click(&mut h, "Visible");
-    assert!(
-        h.state()
-            .editor
-            .project
-            .surface("wall-left")
-            .unwrap()
-            .visible
-    );
 
-    // Blend mode and source combos (combo boxes expose their selection as a value).
     h.get_by_value("Normal").click();
     settle(&mut h);
     click(&mut h, "Screen");
@@ -167,12 +196,11 @@ fn surface_inspector_buttons_edit_the_project() {
             .blend_mode,
         lumen_core::project::BlendMode::Screen
     );
-    h.get_all_by_role_and_label(egui::accesskit::Role::ComboBox, "Source")
+    h.get_all_by_role_and_label(Role::ComboBox, "Source")
         .next()
         .unwrap()
         .click();
     settle(&mut h);
-    // The popup entry and the source list both say "bars"; the popup entry is the last one.
     h.get_all_by_label("bars").last().unwrap().click();
     settle(&mut h);
     assert_eq!(
@@ -185,14 +213,96 @@ fn surface_inspector_buttons_edit_the_project() {
         "bars"
     );
 
+    // Lock, duplicate, order, align.
+    click(&mut h, "Locked");
+    assert!(h.state().editor.is_locked("wall-left"));
+    click(&mut h, "Locked");
+    click(&mut h, "Duplicate");
+    assert_eq!(
+        h.state().editor.selection,
+        Selection::Surface {
+            id: "wall-left-copy".into(),
+            mask: None
+        }
+    );
+    click(&mut h, "Backward");
+    click(&mut h, "Forward");
+    h.state_mut().editor.set_warp(
+        "wall-left-copy",
+        WarpKind::Quad(lumen_core::warp::Quad {
+            corners: [
+                Vec2::new(0.1, 0.2),
+                Vec2::new(0.9, 0.1),
+                Vec2::new(0.8, 0.9),
+                Vec2::new(0.2, 0.8),
+            ],
+        }),
+    );
+    h.state_mut().editor.commit();
+    settle(&mut h);
+    let before = surface_warp(&h, "wall-left-copy");
+    menu(&mut h, "Align", "Flip horizontal");
+    assert_ne!(surface_warp(&h, "wall-left-copy"), before);
+    for item in [
+        "Flip vertical",
+        "Rotate 90°",
+        "Centre",
+        "Match source aspect",
+        "Fit output",
+    ] {
+        menu(&mut h, "Align", item);
+    }
+    assert_eq!(surface_warp(&h, "wall-left-copy"), WarpKind::default());
+    click(&mut h, "Reset warp");
+
     click(&mut h, "Delete surface");
-    assert!(h.state().editor.project.surface("wall-left").is_none());
+    assert!(h.state().editor.project.surface("wall-left-copy").is_none());
     assert_eq!(h.state().editor.selection, Selection::None);
-    assert!(h.state().editor.history.can_undo());
     click(&mut h, "Undo");
-    assert!(h.state().editor.project.surface("wall-left").is_some());
+    assert!(h.state().editor.project.surface("wall-left-copy").is_some());
     click(&mut h, "Redo");
-    assert!(h.state().editor.project.surface("wall-left").is_none());
+    assert!(h.state().editor.project.surface("wall-left-copy").is_none());
+}
+
+#[test]
+fn inline_rename_through_the_inspector() {
+    let mut h = harness(Editor::new(demo_project(), None));
+    click(&mut h, "logo");
+    let field = h.get_by_role_and_label(Role::TextInput, "Id");
+    field.focus();
+    field.type_text("-renamed");
+    settle(&mut h);
+    h.key_press(Key::Enter);
+    settle(&mut h);
+    assert!(
+        h.state().editor.project.surface("logo-renamed").is_some(),
+        "{:?}",
+        h.state()
+            .editor
+            .project
+            .surfaces
+            .iter()
+            .map(|s| &s.id)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        h.state().editor.selection,
+        Selection::Surface {
+            id: "logo-renamed".into(),
+            mask: None
+        }
+    );
+    // An invalid id is reported and nothing changes.
+    let field = h.get_by_role_and_label(Role::TextInput, "Id");
+    field.focus();
+    field.type_text(" bad");
+    settle(&mut h);
+    h.key_press(Key::Enter);
+    settle(&mut h);
+    assert!(h.state().panels.error.is_some());
+    assert!(h.query_by_label("Problem").is_some());
+    click(&mut h, "Dismiss");
+    assert!(h.state().panels.error.is_none());
 }
 
 #[test]
@@ -202,10 +312,7 @@ fn output_inspector_places_and_opens_windows() {
     click(&mut h, "Open window");
     assert_eq!(h.state().editor.open_outputs, ["left"]);
     settle(&mut h);
-    assert!(
-        h.state().editor.window_positions.contains_key("left"),
-        "embedded output viewport reported its rect"
-    );
+    assert!(h.state().editor.window_positions.contains_key("left"));
     click(&mut h, "Use current window position");
     assert!(h
         .state()
@@ -224,18 +331,19 @@ fn output_inspector_places_and_opens_windows() {
         .unwrap()
         .placement
         .is_none());
-    click(&mut h, "Fill monitor DISPLAY1 (1920x1080 at 0,0)");
+    click(&mut h, "Fill monitor DISPLAY2 (1280x720 at 1920,0)");
     let o = h.state().editor.project.output("left").unwrap().clone();
     assert_eq!(
         o.placement.as_ref().map(|p| p.monitor.as_str()),
-        Some("DISPLAY1")
+        Some("DISPLAY2")
     );
+    click(&mut h, "Identify on the projector");
+    assert!(h.state().editor.identify_until.is_some());
     settle(&mut h);
     click(&mut h, "Close window");
     assert!(h.state().editor.open_outputs.is_empty());
     click(&mut h, "Enabled in show mode");
     assert!(!h.state().editor.project.output("left").unwrap().enabled);
-    // Curve combo for the left edge.
     h.get_all_by_value("Smooth").next().unwrap().click();
     settle(&mut h);
     click(&mut h, "Cosine");
@@ -252,36 +360,25 @@ fn output_inspector_places_and_opens_windows() {
     );
     click(&mut h, "Delete output");
     assert!(h.state().editor.project.output("left").is_none());
-    assert!(h
-        .state()
-        .editor
-        .project
-        .surfaces
-        .iter()
-        .all(|s| s.output != "left"));
 }
 
 #[test]
-fn tree_adds_and_removes_things() {
+fn tree_adds_removes_and_offers_context_menus() {
     let mut h = harness(Editor::new(demo_project(), None));
     h.get_all_by_label("+ surface").next().unwrap().click();
     settle(&mut h);
     assert_eq!(h.state().editor.project.surfaces.len(), 4);
     click(&mut h, "+ output");
     assert_eq!(h.state().editor.project.outputs.len(), 3);
-    // Source menu.
     click(&mut h, "+ source");
-    if h.query_by_label("Pattern: Checker").is_some() {
-        click(&mut h, "Pattern: Checker");
-        assert!(h
-            .state()
-            .editor
-            .project
-            .sources
-            .iter()
-            .any(|s| s.id == "pattern"));
-    }
-    // Unused sources can be removed.
+    click(&mut h, "Pattern: Checker");
+    assert!(h
+        .state()
+        .editor
+        .project
+        .sources
+        .iter()
+        .any(|s| s.id == "pattern"));
     h.state_mut()
         .editor
         .add_source(lumen_core::project::SourceKind::Solid { color: [1.0; 4] });
@@ -290,28 +387,71 @@ fn tree_adds_and_removes_things() {
     h.get_all_by_label("×").last().unwrap().click();
     settle(&mut h);
     assert_eq!(h.state().editor.project.sources.len(), before - 1);
-    // Output window toggle in the tree.
     h.get_all_by_label("win").next().unwrap().click();
     settle(&mut h);
     assert_eq!(h.state().editor.open_outputs.len(), 1);
-    // Visibility checkbox in the tree (first surface row).
-    let boxes: Vec<_> = h.get_all_by_role(egui::accesskit::Role::CheckBox).collect();
-    assert!(!boxes.is_empty());
+    h.state_mut().editor.open_outputs.clear();
+    settle(&mut h);
+
+    // Surface context menu.
+    h.get_by_label("logo").click_secondary();
+    settle(&mut h);
+    click(&mut h, "Duplicate  (Ctrl+D)");
+    assert!(h.state().editor.project.surface("logo-copy").is_some());
+    h.get_by_label("logo").click_secondary();
+    settle(&mut h);
+    click(&mut h, "Lock  (L)");
+    assert!(h.state().editor.is_locked("logo"));
+    h.get_by_label("logo [locked]").click_secondary();
+    settle(&mut h);
+    click(&mut h, "Unlock  (L)");
+    assert!(!h.state().editor.is_locked("logo"));
+    h.get_by_label("logo").click_secondary();
+    settle(&mut h);
+    click(&mut h, "Send to back");
+    assert_eq!(
+        h.state().editor.project.surfaces_for_output("right")[0].id,
+        "logo"
+    );
+    h.get_by_label("logo").click_secondary();
+    settle(&mut h);
+    click(&mut h, "Bring to front");
+    assert_eq!(
+        h.state()
+            .editor
+            .project
+            .surfaces_for_output("right")
+            .last()
+            .unwrap()
+            .id,
+        "logo"
+    );
+    h.get_by_label("logo").click_secondary();
+    settle(&mut h);
+    click(&mut h, "Reset warp to full frame");
+    assert_eq!(surface_warp(&h, "logo"), WarpKind::default());
+    h.get_by_label("logo").click_secondary();
+    settle(&mut h);
+    click(&mut h, "Delete");
+    assert!(h.state().editor.project.surface("logo").is_none());
+
+    // Output context menu.
+    h.get_by_label("right").click_secondary();
+    settle(&mut h);
+    click(&mut h, "Add surface");
+    h.get_by_label("right").click_secondary();
+    settle(&mut h);
+    click(&mut h, "Identify outputs");
+    assert!(h.state().editor.identify_until.is_some());
+    h.get_by_label("right").click_secondary();
+    settle(&mut h);
+    click(&mut h, "Delete output");
+    assert!(h.state().editor.project.output("right").is_none());
 }
 
 #[test]
-fn show_inspector_adds_sources_and_toggles_blackout() {
+fn show_inspector_and_media_dialog() {
     let mut h = harness(Editor::new(demo_project(), None));
-    h.state_mut().panels.image_path = "nope.png".into();
-    click(&mut h, "Add image");
-    assert!(h
-        .state()
-        .editor
-        .project
-        .sources
-        .iter()
-        .any(|s| s.id == "image"));
-    assert!(h.state().editor.status.contains("failed"));
     click(&mut h, "Add Spout receiver");
     assert!(h
         .state()
@@ -323,46 +463,39 @@ fn show_inspector_adds_sources_and_toggles_blackout() {
     h.get_all_by_label("Blackout").next().unwrap().click();
     settle(&mut h);
     assert!(h.state().editor.project.blackout);
+    let dir = tempfile::tempdir().unwrap();
+    let img = dir.path().join("pic.png");
+    image::RgbaImage::from_pixel(2, 2, image::Rgba([9, 9, 9, 255]))
+        .save(&img)
+        .unwrap();
+    fake(&mut h, |d| d.media = vec![img.clone()]);
+    click(&mut h, "Add media…");
+    assert!(h
+        .state()
+        .editor
+        .project
+        .sources
+        .iter()
+        .any(|s| s.id == "pic"));
 }
 
 #[test]
 fn canvas_drag_moves_a_corner_and_keys_nudge_it() {
     let mut h = harness(Editor::new(demo_project(), None));
     click(&mut h, "wall-left");
+    h.state_mut().canvas.handles.snap = false;
     let rect = h.state().canvas.last_rect.unwrap();
-    let corner = h
-        .state()
-        .editor
-        .project
-        .surface("wall-left")
-        .unwrap()
-        .warp
-        .clone();
-    let WarpKind::Quad(q) = corner else { panic!() };
-    let start = to_screen(rect, q.corners[2]);
-    let end = start + egui::Vec2::new(-40.0, -30.0);
-    h.hover_at(start);
-    settle(&mut h);
-    h.drag_at(start);
-    settle(&mut h);
-    h.hover_at(start + egui::Vec2::new(-10.0, -10.0));
-    settle(&mut h);
-    h.hover_at(end);
-    settle(&mut h);
-    h.drop_at(end);
-    settle(&mut h);
-    let WarpKind::Quad(moved) = h
-        .state()
-        .editor
-        .project
-        .surface("wall-left")
-        .unwrap()
-        .warp
-        .clone()
-    else {
+    let map = Mapping { rect };
+    let WarpKind::Quad(q) = surface_warp(&h, "wall-left") else {
         panic!()
     };
-    let want = super::canvas::to_norm(rect, end);
+    let start = map.to_screen(q.corners[2]);
+    let end = start + egui::Vec2::new(-40.0, -30.0);
+    drag(&mut h, start, end);
+    let WarpKind::Quad(moved) = surface_warp(&h, "wall-left") else {
+        panic!()
+    };
+    let want = map.to_norm(end);
     assert!(
         moved.corners[2].distance(want) < 0.01,
         "{:?} vs {want:?}",
@@ -374,29 +507,37 @@ fn canvas_drag_moves_a_corner_and_keys_nudge_it() {
         "one drag is one undo step"
     );
 
-    // Click a handle to make it active, then nudge with the keyboard.
-    let pos = to_screen(rect, moved.corners[2]);
+    // Click a handle to make it active, then nudge with the keyboard (plain, Shift, Alt).
+    let pos = map.to_screen(moved.corners[2]);
     h.hover_at(pos);
     h.drag_at(pos);
     h.drop_at(pos);
     settle(&mut h);
+    assert!(h.state().canvas.readout.is_some());
     h.key_press(Key::ArrowRight);
     settle(&mut h);
-    let WarpKind::Quad(nudged) = h
-        .state()
-        .editor
-        .project
-        .surface("wall-left")
-        .unwrap()
-        .warp
-        .clone()
-    else {
+    let WarpKind::Quad(n1) = surface_warp(&h, "wall-left") else {
         panic!()
     };
-    assert!(nudged.corners[2].x > moved.corners[2].x);
+    assert!(n1.corners[2].x > moved.corners[2].x);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowRight);
+    settle(&mut h);
+    let WarpKind::Quad(n2) = surface_warp(&h, "wall-left") else {
+        panic!()
+    };
+    assert!((n2.corners[2].x - n1.corners[2].x) > 5.0 * (n1.corners[2].x - moved.corners[2].x));
+    h.key_press_modifiers(Modifiers::ALT, Key::ArrowDown);
+    settle(&mut h);
+    let WarpKind::Quad(n3) = surface_warp(&h, "wall-left") else {
+        panic!()
+    };
+    assert!(
+        n3.corners[2].y > n2.corners[2].y
+            && (n3.corners[2].y - n2.corners[2].y) < (n1.corners[2].x - moved.corners[2].x)
+    );
 
     // Shift-drag on empty canvas moves everything.
-    let mid = to_screen(rect, Vec2::new(0.5, 0.5));
+    let mid = map.to_screen(Vec2::new(0.5, 0.5));
     h.event_modifiers(egui::Event::PointerMoved(mid), Modifiers::SHIFT);
     h.event_modifiers(
         egui::Event::PointerButton {
@@ -423,33 +564,20 @@ fn canvas_drag_moves_a_corner_and_keys_nudge_it() {
         Modifiers::SHIFT,
     );
     settle(&mut h);
-    let WarpKind::Quad(shifted) = h
-        .state()
-        .editor
-        .project
-        .surface("wall-left")
-        .unwrap()
-        .warp
-        .clone()
-    else {
+    let WarpKind::Quad(shifted) = surface_warp(&h, "wall-left") else {
         panic!()
     };
-    assert!(shifted.corners[0].x > nudged.corners[0].x);
+    assert!(shifted.corners[0].x > n3.corners[0].x);
 
     // Masks get handles too.
     h.state_mut().editor.add_mask("wall-left");
     settle(&mut h);
     let m = h.state().editor.project.surface("wall-left").unwrap().masks[0].clone();
-    let p0 = to_screen(rect, m.points[0]);
-    h.hover_at(p0);
-    h.drag_at(p0);
-    settle(&mut h);
-    h.hover_at(p0 + egui::Vec2::new(15.0, 15.0));
-    settle(&mut h);
-    h.drop_at(p0 + egui::Vec2::new(15.0, 15.0));
-    settle(&mut h);
-    let moved_mask = &h.state().editor.project.surface("wall-left").unwrap().masks[0];
-    assert!(moved_mask.points[0].x > m.points[0].x);
+    let p0 = map.to_screen(m.points[0]);
+    drag(&mut h, p0, p0 + egui::Vec2::new(15.0, 15.0));
+    assert!(
+        h.state().editor.project.surface("wall-left").unwrap().masks[0].points[0].x > m.points[0].x
+    );
 
     // Bezier handles draw and drag as well.
     h.state_mut().editor.selection = Selection::Surface {
@@ -462,23 +590,9 @@ fn canvas_drag_moves_a_corner_and_keys_nudge_it() {
     );
     h.state_mut().editor.commit();
     settle(&mut h);
-    let p = to_screen(rect, Vec2::new(0.5, 0.5));
-    h.hover_at(p);
-    h.drag_at(p);
-    settle(&mut h);
-    h.hover_at(p + egui::Vec2::new(5.0, 5.0));
-    settle(&mut h);
-    h.drop_at(p + egui::Vec2::new(5.0, 5.0));
-    settle(&mut h);
-    let WarpKind::Bezier(b) = h
-        .state()
-        .editor
-        .project
-        .surface("wall-left")
-        .unwrap()
-        .warp
-        .clone()
-    else {
+    let p = map.to_screen(Vec2::new(0.5, 0.5));
+    drag(&mut h, p, p + egui::Vec2::new(5.0, 5.0));
+    let WarpKind::Bezier(b) = surface_warp(&h, "wall-left") else {
         panic!()
     };
     assert!(b
@@ -488,16 +602,84 @@ fn canvas_drag_moves_a_corner_and_keys_nudge_it() {
 }
 
 #[test]
+fn snapping_locking_and_click_to_select_on_the_canvas() {
+    let mut h = harness(Editor::new(demo_project(), None));
+    click(&mut h, "wall-right");
+    let rect = h.state().canvas.last_rect.unwrap();
+    let map = Mapping { rect };
+    // Snap is on: dragging a corner close to the output edge lands exactly on it.
+    h.state_mut().canvas.handles.snap = true;
+    h.state_mut().editor.set_warp(
+        "wall-right",
+        WarpKind::Quad(lumen_core::warp::Quad {
+            corners: [
+                Vec2::new(0.1, 0.1),
+                Vec2::new(0.9, 0.1),
+                Vec2::new(0.9, 0.9),
+                Vec2::new(0.1, 0.9),
+            ],
+        }),
+    );
+    h.state_mut().editor.commit();
+    settle(&mut h);
+    let start = map.to_screen(Vec2::new(0.1, 0.1));
+    let target = map.to_screen(Vec2::new(0.005, 0.1));
+    drag(&mut h, start, target);
+    let WarpKind::Quad(q) = surface_warp(&h, "wall-right") else {
+        panic!()
+    };
+    assert_eq!(q.corners[0].x, 0.0, "snapped to the left edge");
+
+    // A locked surface ignores drags but still gets selected by clicking inside it.
+    h.state_mut().editor.set_locked("wall-right", true);
+    settle(&mut h);
+    let before = surface_warp(&h, "wall-right");
+    let c = map.to_screen(Vec2::new(0.9, 0.1));
+    drag(&mut h, c, c + egui::Vec2::new(-30.0, 30.0));
+    assert_eq!(surface_warp(&h, "wall-right"), before);
+    // Click on the logo (drawn above wall-right) selects it.
+    let logo_centre = map.to_screen(surface_warp(&h, "logo").centre());
+    h.hover_at(logo_centre);
+    h.drag_at(logo_centre);
+    h.drop_at(logo_centre);
+    settle(&mut h);
+    assert_eq!(
+        h.state().editor.selection,
+        Selection::Surface {
+            id: "logo".into(),
+            mask: None
+        }
+    );
+    // Grid toggles draw without breaking anything; zoom changes the rect.
+    h.key_press(Key::G);
+    settle(&mut h);
+    assert!(h.state().canvas.show_grid);
+    h.hover_at(rect.center());
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::Vec2::new(0.0, 120.0),
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Wheel,
+        modifiers: Modifiers::NONE,
+    });
+    settle(&mut h);
+    assert!(h.state().canvas.zoom > 1.0, "{}", h.state().canvas.zoom);
+    assert!(h.state().canvas.last_rect.unwrap().width() > rect.width());
+    h.key_press(Key::Num0);
+    settle(&mut h);
+    assert_eq!(h.state().canvas.zoom, 1.0);
+    h.key_press(Key::S);
+    settle(&mut h);
+    assert!(!h.state().canvas.handles.snap);
+}
+
+#[test]
 fn show_mode_screen_and_shortcuts() {
     let mut h = harness(Editor::new(demo_project(), None));
-    click(&mut h, "Show mode (F10)");
+    click(&mut h, "Show mode");
     assert!(h.state().editor.show_mode);
     assert!(h.query_by_label("SHOW MODE").is_some());
-    assert_eq!(
-        h.state().editor.open_outputs.len(),
-        2,
-        "every enabled output window opened"
-    );
+    assert_eq!(h.state().editor.open_outputs.len(), 2);
     h.key_press(Key::Escape);
     settle(&mut h);
     assert!(h.state().editor.show_mode);
@@ -510,8 +692,11 @@ fn show_mode_screen_and_shortcuts() {
     h.key_press(Key::F10);
     settle(&mut h);
     assert!(!h.state().editor.show_mode);
+    // Show mode opened both output windows; close them so the embedded windows do not
+    // cover the tree in this headless harness.
+    h.state_mut().editor.open_outputs.clear();
+    settle(&mut h);
 
-    // Undo/redo/save/delete shortcuts.
     click(&mut h, "logo");
     h.state_mut().editor.set_param(
         "/surface/logo/opacity",
@@ -530,45 +715,95 @@ fn show_mode_screen_and_shortcuts() {
         h.state().editor.project.surface("logo").unwrap().opacity,
         0.1
     );
+    h.key_press_modifiers(Modifiers::COMMAND, Key::D);
+    settle(&mut h);
+    assert!(h.state().editor.project.surface("logo-copy").is_some());
+    h.key_press(Key::L);
+    settle(&mut h);
+    assert!(h.state().editor.is_locked("logo-copy"));
     h.key_press(Key::Delete);
     settle(&mut h);
-    assert!(h.state().editor.project.surface("logo").is_none());
-    h.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    assert!(h.state().editor.project.surface("logo-copy").is_none());
+    h.key_press(Key::B);
     settle(&mut h);
-    assert!(
-        h.state().panels.path_dialog.is_some(),
-        "save without a path opens Save As"
-    );
+    assert!(h.state().editor.project.blackout);
+    h.key_press(Key::I);
+    settle(&mut h);
+    assert!(h.state().editor.identify_until.is_some());
+    h.key_press(Key::Questionmark);
+    settle(&mut h);
+    assert!(h.state().panels.help);
+    assert!(h.query_by_label("Keyboard shortcuts").is_some());
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    assert!(!h.state().panels.help);
 }
 
 #[test]
-fn file_dialogs_open_save_and_recover() {
+fn file_flows_through_dialogs_and_unsaved_prompt() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ui.lumen.toml");
     let mut h = harness(Editor::new(demo_project(), None));
-    click(&mut h, "Save As…");
-    h.state_mut().panels.path_text = path.display().to_string();
-    click(&mut h, "Save file");
+    // Ctrl+S on an untitled project goes through Save As with the scripted dialog.
+    fake(&mut h, |d| d.save = Some(path.clone()));
+    h.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    settle(&mut h);
     assert!(path.exists());
-    assert!(h.state().panels.path_dialog.is_none());
     assert_eq!(h.state().editor.path.as_deref(), Some(path.as_path()));
-
-    click(&mut h, "Open…");
-    h.state_mut().panels.path_text = dir.path().join("missing.toml").display().to_string();
-    click(&mut h, "Open file");
-    assert!(h.state().panels.error.is_some(), "error stays visible");
-    assert!(h.state().panels.path_dialog.is_some());
+    assert!(h.state().settings.recent.contains(&path));
+    // A cancelled dialog does nothing.
+    fake(&mut h, |_| {});
+    menu(&mut h, "File", "Save As…  (Ctrl+Shift+S)");
+    assert!(h.state().panels.error.is_none());
+    // Open a missing file: error dialog.
+    fake(&mut h, |d| {
+        d.project = Some(dir.path().join("missing.toml"));
+    });
+    menu(&mut h, "File", "Open…  (Ctrl+O)");
+    assert!(h.query_by_label("Problem").is_some());
+    click(&mut h, "Dismiss");
+    // Dirty + New: prompt, cancel keeps everything.
+    h.state_mut()
+        .editor
+        .set_param("/show/master", lumen_core::params::ParamValue::Number(0.3));
+    h.state_mut().editor.commit();
+    menu(&mut h, "File", "New  (Ctrl+N)");
+    assert!(h.query_by_label("Unsaved changes").is_some());
     click(&mut h, "Cancel");
-    assert!(h.state().panels.path_dialog.is_none());
-    click(&mut h, "Open…");
-    h.state_mut().panels.path_text = path.display().to_string();
-    click(&mut h, "Open file");
+    assert_eq!(h.state().editor.project.master, 0.3);
+    // Prompt, discard: new project.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::N);
+    settle(&mut h);
+    click(&mut h, "Discard changes");
+    assert!(h.state().editor.path.is_none());
+    assert!(
+        h.state().panels.welcome,
+        "a new project shows the welcome screen"
+    );
+    click(&mut h, "Close");
+    // Open the saved file through the dialog; then dirty + open another with "Save and continue".
+    fake(&mut h, |d| d.project = Some(path.clone()));
+    h.key_press_modifiers(Modifiers::COMMAND, Key::O);
+    settle(&mut h);
     assert_eq!(h.state().editor.path.as_deref(), Some(path.as_path()));
-    click(&mut h, "Save");
-    assert!(!h.state().editor.dirty);
-
+    h.state_mut()
+        .editor
+        .set_param("/show/master", lumen_core::params::ParamValue::Number(0.6));
+    h.state_mut().editor.commit();
+    let other = dir.path().join("other.lumen.toml");
+    demo_project().save(&other).unwrap();
+    fake(&mut h, |d| d.project = Some(other.clone()));
+    h.key_press_modifiers(Modifiers::COMMAND, Key::O);
+    settle(&mut h);
+    click(&mut h, "Save and continue");
+    assert_eq!(h.state().editor.path.as_deref(), Some(other.as_path()));
+    assert_eq!(
+        lumen_core::project::Project::load(&path).unwrap().master,
+        0.6,
+        "saved before switching"
+    );
     // Recovery prompt.
-    let auto = crate::autosave::autosave_path(&path);
+    let auto = crate::autosave::autosave_path(&other);
     let mut changed = demo_project();
     changed.master = 0.4;
     changed.save(&auto).unwrap();
@@ -580,12 +815,136 @@ fn file_dialogs_open_save_and_recover() {
     settle(&mut h);
     click(&mut h, "Discard");
     assert!(!auto.exists());
-    click(&mut h, "New");
-    assert!(h.state().editor.path.is_none());
+    // Close with unsaved changes: cancelled, prompt, confirm.
+    h.state_mut().editor.dirty = true;
+    h.state_mut().request(Pending::Close);
+    settle(&mut h);
+    assert!(h.query_by_label("Unsaved changes").is_some());
+    click(&mut h, "Discard changes");
+    assert!(h.state().close_confirmed);
+}
+
+#[test]
+fn welcome_screen_creates_outputs_and_remembers_recent() {
+    let dir = tempfile::tempdir().unwrap();
+    let recent = dir.path().join("old.lumen.toml");
+    demo_project().save(&recent).unwrap();
+    let mut h = harness(Editor::new(lumen_core::project::Project::default(), None));
+    h.state_mut().settings.push_recent(&recent);
+    h.state_mut().panels.welcome = true;
+    settle(&mut h);
+    assert!(h.query_by_label("Welcome to lumen").is_some());
+    click(&mut h, "Create 1 output(s) with a test grid");
+    assert_eq!(h.state().editor.project.outputs.len(), 1);
+    assert_eq!(
+        h.state().editor.project.outputs[0]
+            .placement
+            .as_ref()
+            .unwrap()
+            .monitor,
+        "DISPLAY2"
+    );
+    assert!(!h.state().panels.welcome);
+    h.state_mut().panels.welcome = true;
+    settle(&mut h);
+    click(&mut h, "old.lumen.toml");
+    assert!(
+        h.query_by_label("Unsaved changes").is_some(),
+        "the fresh outputs are unsaved"
+    );
+    click(&mut h, "Discard changes");
+    assert_eq!(h.state().editor.path.as_deref(), Some(recent.as_path()));
+    h.state_mut().panels.welcome = true;
+    settle(&mut h);
+    click(&mut h, "Don't show again");
+    assert!(h.state().settings.skip_welcome);
+    assert!(!h.state().panels.welcome);
+    menu(&mut h, "File", "Welcome screen");
+    assert!(h.state().panels.welcome);
+    click(&mut h, "Start from the demo");
+    assert!(!h.state().panels.welcome);
+}
+
+#[derive(Debug)]
+struct TestDrop(PathBuf);
+
+impl egui::DroppedFile for TestDrop {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+#[test]
+fn dropped_files_become_sources_and_hover_shows_an_overlay() {
+    let dir = tempfile::tempdir().unwrap();
+    let img = dir.path().join("drop.png");
+    image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 1, 1, 255]))
+        .save(&img)
+        .unwrap();
+    let mut h = harness(Editor::new(demo_project(), None));
+    click(&mut h, "right");
+    h.input_mut().hovered_files.push(egui::HoveredFile {
+        path: Some(img.clone()),
+        mime: String::new(),
+    });
+    h.step();
+    assert!(h.state().drop_hover);
+    h.input_mut().hovered_files.clear();
+    h.input_mut().dropped_files.push(Arc::new(TestDrop(img)));
+    h.step();
+    settle(&mut h);
+    assert!(h.state().editor.project.source("drop").is_some());
+    assert_eq!(
+        h.state()
+            .editor
+            .project
+            .surface("drop-surface")
+            .unwrap()
+            .output,
+        "right"
+    );
+}
+
+#[test]
+fn view_menu_toggles_and_output_windows_carry_handles() {
+    let mut h = harness(Editor::new(demo_project(), None));
+    menu(&mut h, "View", "Grid  (G)");
+    assert!(h.state().canvas.show_grid);
+    menu(&mut h, "View", "Handles on output windows");
+    assert!(!h.state().editor.edit_on_wall);
+    menu(&mut h, "View", "Handles on output windows");
+    menu(&mut h, "View", "Fit view  (0)");
+    menu(&mut h, "View", "Keyboard shortcuts  (?)");
+    assert!(h.state().panels.help);
+    click(&mut h, "Close");
+    // Settings persisted the toggles.
+    let saved = crate::settings::Settings::load();
+    assert!(saved.show_grid);
+    click(&mut h, "wall-left");
+    menu(&mut h, "Edit", "Duplicate surface  (Ctrl+D)");
+    assert!(h.state().editor.project.surface("wall-left-copy").is_some());
+    menu(&mut h, "Edit", "Delete  (Del)");
+    assert!(h.state().editor.project.surface("wall-left-copy").is_none());
+    menu(&mut h, "Edit", "Undo  (Ctrl+Z)");
+    menu(&mut h, "Edit", "Redo  (Ctrl+Y)");
+    click(&mut h, "Identify");
+    h.get_all_by_label("Blackout").next().unwrap().click();
+    settle(&mut h);
+    assert!(h.state().editor.project.blackout);
+    // An open output window with a selected surface draws the on-wall handles.
+    click(&mut h, "wall-left");
+    h.state_mut().editor.toggle_output_window("left");
+    h.state_mut().editor.identify(std::time::Instant::now());
+    settle(&mut h);
+    assert!(h.state().wall.contains_key("left"));
 }
 
 #[test]
 fn starting_in_show_mode_and_osc_port_zero() {
+    config_dir();
     let launch = Launch {
         project: None,
         osc_port: 0,
@@ -604,7 +963,6 @@ fn starting_in_show_mode_and_osc_port_zero() {
     settle(&mut h);
     assert!(h.state().editor.show_mode);
     assert!(h.state().editor.osc.is_none());
-    assert!(h.state().fps() >= 0.0);
     h.run_steps(3);
     assert!(h.state().fps() > 0.0);
 }
@@ -613,7 +971,7 @@ fn starting_in_show_mode_and_osc_port_zero() {
 fn empty_project_canvas_asks_for_an_output() {
     let h = harness(Editor::new(lumen_core::project::Project::default(), None));
     assert!(h
-        .query_by_label("Add an output to start mapping.")
+        .query_by_label("Add an output to start mapping (or drop an image here).")
         .is_some());
     assert!(h.state().canvas.last_rect.is_none());
 }

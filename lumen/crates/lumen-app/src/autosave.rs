@@ -62,6 +62,11 @@ impl Autosave {
         dirty && now.duration_since(self.last) >= self.interval
     }
 
+    /// Time left until the next autosave, zero when already due.
+    pub fn due_in(&self, now: Instant) -> Duration {
+        self.interval.saturating_sub(now.duration_since(self.last))
+    }
+
     /// Records that a save (auto or manual) happened at `now`.
     pub fn mark_saved(&mut self, now: Instant) {
         self.last = now;
@@ -97,6 +102,9 @@ mod tests {
             !a.due(false, start + Duration::from_mins(1)),
             "clean projects never autosave"
         );
+        let left = a.due_in(start + Duration::from_secs(4));
+        assert!(left > Duration::from_millis(5900) && left <= Duration::from_secs(6));
+        assert_eq!(a.due_in(start + Duration::from_secs(40)), Duration::ZERO);
         a.mark_saved(start + Duration::from_secs(11));
         assert!(!a.due(true, start + Duration::from_secs(15)));
         assert!(a.due(true, start + Duration::from_secs(22)));

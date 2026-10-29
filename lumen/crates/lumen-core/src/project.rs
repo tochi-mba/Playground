@@ -225,6 +225,9 @@ pub struct Surface {
     /// Masks in surface space.
     #[serde(default)]
     pub masks: Vec<Mask>,
+    /// Locked surfaces show no handles and ignore drags, so a finished calibration stays put.
+    #[serde(default)]
+    pub locked: bool,
 }
 
 fn default_one() -> f64 {
@@ -364,6 +367,101 @@ impl Project {
     /// Finds an output by id.
     pub fn output(&self, id: &str) -> Option<&Output> {
         self.outputs.iter().find(|o| o.id == id)
+    }
+
+    /// Renames a surface. Fails when the new id is invalid or taken.
+    pub fn rename_surface(&mut self, old: &str, new: &str) -> Result<(), ProjectError> {
+        self.check_new_id(new, old)?;
+        let s = self
+            .surface_mut(old)
+            .ok_or_else(|| ProjectError::UnknownParam(old.to_string()))?;
+        s.id = new.to_string();
+        Ok(())
+    }
+
+    /// Renames an output and every surface that references it.
+    pub fn rename_output(&mut self, old: &str, new: &str) -> Result<(), ProjectError> {
+        self.check_new_id(new, old)?;
+        let o = self
+            .output_mut(old)
+            .ok_or_else(|| ProjectError::UnknownParam(old.to_string()))?;
+        o.id = new.to_string();
+        for s in &mut self.surfaces {
+            if s.output == old {
+                s.output = new.to_string();
+            }
+        }
+        Ok(())
+    }
+
+    /// Renames a source and every surface that references it.
+    pub fn rename_source(&mut self, old: &str, new: &str) -> Result<(), ProjectError> {
+        self.check_new_id(new, old)?;
+        let src = self
+            .sources
+            .iter_mut()
+            .find(|s| s.id == old)
+            .ok_or_else(|| ProjectError::UnknownParam(old.to_string()))?;
+        src.id = new.to_string();
+        for s in &mut self.surfaces {
+            if s.source == old {
+                s.source = new.to_string();
+            }
+        }
+        Ok(())
+    }
+
+    fn check_new_id(&self, new: &str, old: &str) -> Result<(), ProjectError> {
+        if !is_valid_id(new) {
+            return Err(ProjectError::Parse(format!(
+                "id {new:?} must match [A-Za-z0-9_-]+"
+            )));
+        }
+        if new != old && self.id_in_use(new) {
+            return Err(ProjectError::Parse(format!("id {new:?} is already used")));
+        }
+        Ok(())
+    }
+
+    /// True when any source, output or surface has this id.
+    pub fn id_in_use(&self, id: &str) -> bool {
+        self.sources.iter().any(|s| s.id == id)
+            || self.outputs.iter().any(|o| o.id == id)
+            || self.surfaces.iter().any(|s| s.id == id)
+    }
+
+    /// A free id derived from `prefix` (`prefix`, `prefix-2`, `prefix-3`, ...).
+    pub fn fresh_id(&self, prefix: &str) -> String {
+        let base: String = prefix
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+            .collect();
+        let base = if base.is_empty() {
+            "item".to_string()
+        } else {
+            base
+        };
+        if !self.id_in_use(&base) {
+            return base;
+        }
+        let limit = self.sources.len() + self.outputs.len() + self.surfaces.len() + 3;
+        (2..limit)
+            .map(|n| format!("{base}-{n}"))
+            .find(|id| !self.id_in_use(id))
+            .unwrap_or(base)
+    }
+
+    /// Copies a surface under a fresh id, placed just above the original in draw order.
+    /// Returns the new id.
+    pub fn duplicate_surface(&mut self, id: &str) -> Option<String> {
+        let original = self.surface(id)?.clone();
+        let new_id = self.fresh_id(&format!("{id}-copy"));
+        let mut copy = original;
+        copy.id.clone_from(&new_id);
+        copy.z += 1;
+        copy.locked = false;
+        self.surfaces.push(copy);
+        Some(new_id)
     }
 
     /// Finds a surface by id.
@@ -761,6 +859,7 @@ pub fn demo_project() -> Project {
                     ],
                 }),
                 masks: Vec::new(),
+                locked: false,
             },
             Surface {
                 id: "wall-right".into(),
@@ -778,6 +877,7 @@ pub fn demo_project() -> Project {
                 },
                 warp: WarpKind::default(),
                 masks: Vec::new(),
+                locked: false,
             },
             Surface {
                 id: "logo".into(),
@@ -805,6 +905,7 @@ pub fn demo_project() -> Project {
                     feather: 0.05,
                     subtract: true,
                 }],
+                locked: false,
             },
         ],
         ..Project::default()
@@ -1096,6 +1197,52 @@ color = [1.0, 0.0, 0.0, 1.0]
         p.set_keyed("/surface/gone/opacity", &ParamValue::Number(0.5));
         p.set_keyed("not an address", &ParamValue::Number(0.5));
         assert_eq!(p, demo_project());
+    }
+
+    #[test]
+    fn rename_rewrites_references_and_validates() {
+        let mut p = demo_project();
+        p.rename_output("left", "stage-left").unwrap();
+        assert_eq!(p.surfaces[0].output, "stage-left");
+        assert!(p.output("stage-left").is_some());
+        p.rename_source("grid", "pattern").unwrap();
+        assert_eq!(
+            p.surfaces.iter().filter(|s| s.source == "pattern").count(),
+            2
+        );
+        p.rename_surface("logo", "badge").unwrap();
+        assert!(p.surface("badge").is_some());
+        assert!(p.is_valid());
+        assert!(p.rename_surface("badge", "bad id").is_err());
+        assert!(
+            p.rename_surface("badge", "bars").is_err(),
+            "taken by a source"
+        );
+        assert!(
+            p.rename_surface("badge", "badge").is_ok(),
+            "same id is fine"
+        );
+        assert!(p.rename_surface("ghost", "x").is_err());
+        assert!(p.rename_output("ghost", "x").is_err());
+        assert!(p.rename_source("ghost", "x").is_err());
+        assert!(p.id_in_use("badge") && !p.id_in_use("free"));
+    }
+
+    #[test]
+    fn fresh_ids_and_duplicates() {
+        let mut p = demo_project();
+        assert_eq!(p.fresh_id("new"), "new");
+        assert_eq!(p.fresh_id("logo"), "logo-2");
+        assert_eq!(p.fresh_id("bad id!"), "badid");
+        assert_eq!(p.fresh_id("!!"), "item");
+        let copy = p.duplicate_surface("logo").unwrap();
+        assert_eq!(copy, "logo-copy");
+        let c = p.surface("logo-copy").unwrap();
+        assert_eq!(c.z, 2);
+        assert_eq!(c.source, "bars");
+        assert_eq!(p.duplicate_surface("logo").unwrap(), "logo-copy-2");
+        assert!(p.duplicate_surface("ghost").is_none());
+        assert!(p.is_valid());
     }
 
     #[test]

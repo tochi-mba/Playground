@@ -1,22 +1,115 @@
-//! Top bar, object tree, inspector, dialogs and the show-mode screen.
+//! Toolbar, status bar, object tree, inspector, dialogs and the show-mode screen.
 
-use super::{Editor, MonitorInfo, Selection};
+use super::canvas::CanvasState;
+use super::{AlignOp, Editor, MonitorInfo, Pending, Selection};
+use crate::settings::Settings;
 use eframe::egui::{self, Color32, RichText};
 use lumen_core::blend::BlendCurve;
 use lumen_core::params::ParamValue;
 use lumen_core::project::{BlendMode, Placement, SourceKind, TestPattern};
 use lumen_core::warp::{BezierMesh, WarpKind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+/// Native file dialogs, behind a trait so tests can script them.
+pub trait FileDialogs {
+    /// Choose a project to open.
+    fn pick_project(&mut self) -> Option<PathBuf>;
+    /// Choose where to save a project.
+    fn save_project(&mut self, suggested: Option<&Path>) -> Option<PathBuf>;
+    /// Choose media files to add as sources.
+    fn pick_media(&mut self) -> Vec<PathBuf>;
+}
+
+/// The real dialogs.
+#[derive(Debug, Default)]
+pub struct NativeDialogs;
+
+impl FileDialogs for NativeDialogs {
+    fn pick_project(&mut self) -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .add_filter("lumen project", &["toml"])
+            .pick_file()
+    }
+    fn save_project(&mut self, suggested: Option<&Path>) -> Option<PathBuf> {
+        let mut d = rfd::FileDialog::new().add_filter("lumen project", &["toml"]);
+        if let Some(p) = suggested {
+            if let Some(dir) = p.parent() {
+                d = d.set_directory(dir);
+            }
+            if let Some(name) = p.file_name() {
+                d = d.set_file_name(name.to_string_lossy());
+            }
+        } else {
+            d = d.set_file_name("show.lumen.toml");
+        }
+        d.save_file()
+    }
+    fn pick_media(&mut self) -> Vec<PathBuf> {
+        rfd::FileDialog::new()
+            .add_filter("images", &["png", "jpg", "jpeg"])
+            .pick_files()
+            .unwrap_or_default()
+    }
+}
+
+/// Scripted dialogs for tests.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub struct FakeDialogs {
+    /// Returned by the next `pick_project`.
+    pub project: Option<PathBuf>,
+    /// Returned by the next `save_project`.
+    pub save: Option<PathBuf>,
+    /// Returned by the next `pick_media`.
+    pub media: Vec<PathBuf>,
+}
+
+#[cfg(test)]
+impl FileDialogs for FakeDialogs {
+    fn pick_project(&mut self) -> Option<PathBuf> {
+        self.project.take()
+    }
+    fn save_project(&mut self, _suggested: Option<&Path>) -> Option<PathBuf> {
+        self.save.take()
+    }
+    fn pick_media(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.media)
+    }
+}
+
+/// Things the panels ask the app to do; the app runs them after the frame.
+#[derive(Debug, Default)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct Actions {
+    /// Save (or Save As when untitled).
+    pub save: bool,
+    /// Save As.
+    pub save_as: bool,
+    /// Open through the dialog.
+    pub open: bool,
+    /// Open this path.
+    pub open_path: Option<PathBuf>,
+    /// New project.
+    pub new: bool,
+    /// Add media through the dialog.
+    pub add_media: bool,
+    /// Create outputs for the detected monitors.
+    pub create_outputs: bool,
+    /// The unsaved-changes prompt was answered: proceed or cancel.
+    pub resolve_pending: Option<bool>,
+    /// Never show the welcome screen again.
+    pub skip_welcome: bool,
+}
 
 /// Transient UI state for the panels.
-#[derive(Debug, Default)]
 pub struct PanelState {
-    /// Open/Save-As path prompt, when shown.
-    pub path_dialog: Option<PathDialog>,
-    /// Text being typed into the path prompt.
-    pub path_text: String,
-    /// Text for a new image source path.
-    pub image_path: String,
+    /// File dialogs (native, or scripted in tests).
+    pub dialogs: Box<dyn FileDialogs>,
+    /// The welcome screen is up.
+    pub welcome: bool,
+    /// The keyboard cheat sheet is up.
+    pub help: bool,
     /// Text for a new Spout sender name.
     pub spout_sender: String,
     /// Mesh size for "convert to Bezier".
@@ -25,28 +118,31 @@ pub struct PanelState {
     pub mesh_rows: u32,
     /// Error from the last file operation.
     pub error: Option<String>,
+    /// Id being edited in the rename box.
+    pub rename: Option<(String, String)>,
 }
 
-/// Which file prompt is open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PathDialog {
-    /// Open a project.
-    Open,
-    /// Save the project under a new name.
-    SaveAs,
-}
-
-impl PanelState {
-    /// Saves, or opens the Save As prompt when the project has no path.
-    pub fn save(&mut self, editor: &mut Editor) {
-        if editor.path.is_some() {
-            if let Err(e) = editor.save() {
-                self.error = Some(e);
-            }
-        } else {
-            self.path_dialog = Some(PathDialog::SaveAs);
-            self.path_text = "show.lumen.toml".into();
+impl Default for PanelState {
+    fn default() -> Self {
+        Self {
+            dialogs: Box::new(NativeDialogs),
+            welcome: false,
+            help: false,
+            spout_sender: String::new(),
+            mesh_cols: 2,
+            mesh_rows: 2,
+            error: None,
+            rename: None,
         }
+    }
+}
+
+impl std::fmt::Debug for PanelState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PanelState")
+            .field("welcome", &self.welcome)
+            .field("help", &self.help)
+            .finish_non_exhaustive()
     }
 }
 
@@ -86,54 +182,212 @@ fn param_toggle(ui: &mut egui::Ui, editor: &mut Editor, label: &str, address: &s
     }
 }
 
-/// Menu and status strip.
-pub fn top_bar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut PanelState) {
+/// Toolbar.
+#[allow(clippy::too_many_lines)]
+pub fn top_bar(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut PanelState,
+    canvas: &mut CanvasState,
+    actions: &mut Actions,
+) {
     egui::Panel::top("lumen-top").show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
-            if ui.button("New").clicked() {
-                *editor = Editor::new(lumen_core::project::demo_project(), None);
-            }
-            if ui.button("Open…").clicked() {
-                state.path_dialog = Some(PathDialog::Open);
-                state.path_text = editor
-                    .path
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default();
-            }
-            if ui.button("Save").clicked() {
-                state.save(editor);
-            }
-            if ui.button("Save As…").clicked() {
-                state.path_dialog = Some(PathDialog::SaveAs);
-                state.path_text = editor
-                    .path
-                    .as_ref()
-                    .map_or_else(|| "show.lumen.toml".into(), |p| p.display().to_string());
-            }
+            ui.menu_button("File", |ui| {
+                if ui.button("New  (Ctrl+N)").clicked() {
+                    actions.new = true;
+                    ui.close();
+                }
+                if ui.button("Open…  (Ctrl+O)").clicked() {
+                    actions.open = true;
+                    ui.close();
+                }
+                if ui.button("Save  (Ctrl+S)").clicked() {
+                    actions.save = true;
+                    ui.close();
+                }
+                if ui.button("Save As…  (Ctrl+Shift+S)").clicked() {
+                    actions.save_as = true;
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Add media…").clicked() {
+                    actions.add_media = true;
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Welcome screen").clicked() {
+                    state.welcome = true;
+                    ui.close();
+                }
+            });
+            ui.menu_button("Edit", |ui| {
+                if ui
+                    .add_enabled(
+                        editor.history.can_undo(),
+                        egui::Button::new("Undo  (Ctrl+Z)"),
+                    )
+                    .clicked()
+                {
+                    editor.undo();
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        editor.history.can_redo(),
+                        egui::Button::new("Redo  (Ctrl+Y)"),
+                    )
+                    .clicked()
+                {
+                    editor.redo();
+                    ui.close();
+                }
+                ui.separator();
+                let has_surface = matches!(editor.selection, Selection::Surface { .. });
+                if ui
+                    .add_enabled(
+                        has_surface,
+                        egui::Button::new("Duplicate surface  (Ctrl+D)"),
+                    )
+                    .clicked()
+                {
+                    if let Selection::Surface { id, .. } = editor.selection.clone() {
+                        editor.duplicate_surface(&id);
+                    }
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        editor.selection != Selection::None,
+                        egui::Button::new("Delete  (Del)"),
+                    )
+                    .clicked()
+                {
+                    editor.delete_selection();
+                    ui.close();
+                }
+            });
+            ui.menu_button("View", |ui| {
+                ui.checkbox(&mut canvas.show_grid, "Grid  (G)");
+                ui.checkbox(&mut canvas.handles.snap, "Snap  (S)");
+                ui.checkbox(&mut editor.edit_on_wall, "Handles on output windows");
+                ui.add(
+                    egui::Slider::new(&mut canvas.grid_divisions, 2..=32).text("grid divisions"),
+                );
+                if ui.button("Fit view  (0)").clicked() {
+                    canvas.reset_view();
+                    ui.close();
+                }
+                if ui.button("Keyboard shortcuts  (?)").clicked() {
+                    state.help = true;
+                    ui.close();
+                }
+            });
             ui.separator();
             if ui
                 .add_enabled(editor.history.can_undo(), egui::Button::new("Undo"))
+                .on_hover_text("Ctrl+Z")
                 .clicked()
             {
                 editor.undo();
             }
             if ui
                 .add_enabled(editor.history.can_redo(), egui::Button::new("Redo"))
+                .on_hover_text("Ctrl+Y")
                 .clicked()
             {
                 editor.redo();
             }
             ui.separator();
-            if ui.button("Show mode (F10)").clicked() {
+            if ui
+                .button("Identify")
+                .on_hover_text("Flash each output's name on its projector (I)")
+                .clicked()
+            {
+                editor.identify(Instant::now());
+            }
+            if ui
+                .button("Show mode")
+                .on_hover_text("Lock editing and open every output (F10)")
+                .clicked()
+            {
                 editor.enter_show_mode();
             }
-            param_toggle(ui, editor, "Blackout", "/show/blackout");
+            let blackout = editor.project.blackout;
+            if ui
+                .add(
+                    egui::Button::new(if blackout { "BLACKOUT" } else { "Blackout" }).fill(
+                        if blackout {
+                            Color32::from_rgb(120, 20, 20)
+                        } else {
+                            Color32::TRANSPARENT
+                        },
+                    ),
+                )
+                .on_hover_text("All outputs black (B)")
+                .clicked()
+            {
+                editor.set_param("/show/blackout", ParamValue::Bool(!blackout));
+                editor.commit();
+            }
             param_slider(ui, editor, "Master", "/show/master", 0.0..=1.0);
+        });
+    });
+}
+
+/// Bottom status strip.
+pub fn status_bar(
+    ui: &mut egui::Ui,
+    editor: &Editor,
+    canvas: &CanvasState,
+    fps: f32,
+    now: Instant,
+) {
+    egui::Panel::bottom("lumen-status").show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(&editor.status).weak());
+            let selected = editor.selected_surfaces();
+            if selected.len() > 1 {
+                ui.label(RichText::new(format!("{} surfaces selected", selected.len())).weak());
+            }
+            ui.separator();
+            ui.label(
+                RichText::new(match &editor.osc {
+                    Some(s) => format!("OSC {}", s.local_addr().port()),
+                    None => "OSC off".into(),
+                })
+                .weak(),
+            );
+            if let Some(p) = &editor.last_patch {
+                ui.label(RichText::new(p).weak().small());
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(&editor.status).weak());
-                if let Some(p) = &editor.last_patch {
-                    ui.label(RichText::new(format!("OSC {p}")).weak());
+                ui.label(RichText::new(format!("{fps:.0} fps")).weak());
+                ui.separator();
+                ui.label(RichText::new(format!("{:.0}%", canvas.zoom * 100.0)).weak())
+                    .on_hover_text("Scroll to zoom, middle-drag to pan, 0 to fit");
+                ui.separator();
+                ui.label(
+                    RichText::new(if canvas.handles.snap {
+                        "snap on"
+                    } else {
+                        "snap off"
+                    })
+                    .weak(),
+                );
+                ui.separator();
+                if editor.dirty {
+                    let secs = editor.autosave_due_in(now).as_secs();
+                    ui.label(
+                        RichText::new(if editor.path.is_some() {
+                            format!("unsaved · autosave in {secs}s")
+                        } else {
+                            "unsaved".into()
+                        })
+                        .weak(),
+                    );
+                } else {
+                    ui.label(RichText::new("saved").weak());
                 }
             });
         });
@@ -141,43 +395,70 @@ pub fn top_bar(ui: &mut egui::Ui, editor: &mut Editor, state: &mut PanelState) {
 }
 
 /// Outputs, surfaces and sources tree.
-pub fn left_panel(ui: &mut egui::Ui, editor: &mut Editor) {
-    egui::Panel::left("lumen-left").default_size(230.0).show(ui, |ui| {
+#[allow(clippy::too_many_lines)]
+pub fn left_panel(ui: &mut egui::Ui, editor: &mut Editor, actions: &mut Actions) {
+    egui::Panel::left("lumen-left").default_size(240.0).show(ui, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Outputs");
-                if ui.small_button("+ output").clicked() {
+                if ui.small_button("+ output").on_hover_text("Add a projector").clicked() {
                     editor.add_output();
                 }
             });
-            let outputs: Vec<_> = editor.project.outputs.iter().map(|o| (o.id.clone(), o.enabled)).collect();
-            for (id, _enabled) in outputs {
+            let outputs: Vec<_> = editor.project.outputs.iter().map(|o| o.id.clone()).collect();
+            for (index, id) in outputs.iter().enumerate() {
                 let selected = editor.selection == Selection::Output(id.clone());
                 ui.horizontal(|ui| {
-                    let open = editor.open_outputs.contains(&id);
-                    if ui.selectable_label(open, "win").on_hover_text("Toggle output window").clicked() {
-                        editor.toggle_output_window(&id);
+                    let open = editor.open_outputs.contains(id);
+                    if ui.selectable_label(open, "win").on_hover_text("Toggle the output window").clicked() {
+                        editor.toggle_output_window(id);
                     }
-                    if ui.selectable_label(selected, &id).clicked() {
+                    let color = super::handles::output_color(index);
+                    let r = ui.selectable_label(selected, RichText::new(id).color(color));
+                    if r.clicked() {
                         editor.selection = Selection::Output(id.clone());
+                        editor.extra_selected.clear();
                     }
+                    r.context_menu(|ui| {
+                        if ui.button("Add surface").clicked() {
+                            editor.add_surface(id);
+                            ui.close();
+                        }
+                        if ui.button(if open { "Close window" } else { "Open window" }).clicked() {
+                            editor.toggle_output_window(id);
+                            ui.close();
+                        }
+                        if ui.button("Identify outputs").clicked() {
+                            editor.identify(Instant::now());
+                            ui.close();
+                        }
+                        if ui.button("Delete output").clicked() {
+                            editor.selection = Selection::Output(id.clone());
+                            editor.delete_selection();
+                            ui.close();
+                        }
+                    });
                     if ui.small_button("+ surface").clicked() {
-                        editor.add_surface(&id);
+                        editor.add_surface(id);
                     }
                 });
-                let surfaces: Vec<_> = editor.project.surfaces_for_output(&id).iter().map(|s| (s.id.clone(), s.visible)).collect();
-                ui.indent(&id, |ui| {
-                    for (sid, visible) in surfaces {
-                        let selected = matches!(&editor.selection, Selection::Surface { id, .. } if *id == sid);
+                let surfaces: Vec<_> = editor.project.surfaces_for_output(id).iter().map(|s| (s.id.clone(), s.visible, s.locked)).collect();
+                ui.indent(id, |ui| {
+                    for (sid, visible, locked) in surfaces {
+                        let selected = matches!(&editor.selection, Selection::Surface { id, .. } if *id == sid) || editor.extra_selected.contains(&sid);
                         ui.horizontal(|ui| {
                             let mut v = visible;
                             if ui.checkbox(&mut v, "").on_hover_text("Show or hide").changed() {
                                 editor.set_param(&format!("/surface/{sid}/visible"), ParamValue::Bool(v));
                                 editor.commit();
                             }
-                            if ui.selectable_label(selected, &sid).clicked() {
-                                editor.selection = Selection::Surface { id: sid.clone(), mask: None };
+                            let text = if locked { format!("{sid} [locked]") } else { sid.clone() };
+                            let r = ui.selectable_label(selected, text);
+                            if r.clicked() {
+                                let shift = ui.input(|i| i.modifiers.shift);
+                                editor.select_surface(&sid, shift);
                             }
+                            r.context_menu(|ui| surface_context_menu(ui, editor, &sid, locked));
                         });
                     }
                 });
@@ -186,6 +467,11 @@ pub fn left_panel(ui: &mut egui::Ui, editor: &mut Editor) {
             ui.horizontal(|ui| {
                 ui.heading("Sources");
                 ui.menu_button("+ source", |ui| {
+                    if ui.button("Media file…").clicked() {
+                        actions.add_media = true;
+                        ui.close();
+                    }
+                    ui.separator();
                     for (label, pattern) in [("Grid", TestPattern::Grid), ("Bars", TestPattern::Bars), ("Checker", TestPattern::Checker), ("Ramp", TestPattern::Ramp)] {
                         if ui.button(format!("Pattern: {label}")).clicked() {
                             editor.add_source(SourceKind::TestPattern { pattern });
@@ -202,7 +488,7 @@ pub fn left_panel(ui: &mut egui::Ui, editor: &mut Editor) {
             for (id, desc) in sources {
                 ui.horizontal(|ui| {
                     ui.label(&id);
-                    ui.label(RichText::new(desc).weak());
+                    ui.label(RichText::new(desc).weak().small());
                     let used = editor.project.surfaces.iter().any(|s| s.source == id);
                     if ui.add_enabled(!used, egui::Button::new("×").small()).on_hover_text("Remove (unused sources only)").clicked() {
                         editor.edit(|p| p.sources.retain(|s| s.id != id));
@@ -210,8 +496,46 @@ pub fn left_panel(ui: &mut egui::Ui, editor: &mut Editor) {
                     }
                 });
             }
+            ui.add_space(8.0);
+            ui.label(RichText::new("Drop image files anywhere to add them.").weak().small());
         });
     });
+}
+
+fn surface_context_menu(ui: &mut egui::Ui, editor: &mut Editor, sid: &str, locked: bool) {
+    if ui.button("Duplicate  (Ctrl+D)").clicked() {
+        editor.duplicate_surface(sid);
+        ui.close();
+    }
+    if ui
+        .button(if locked { "Unlock  (L)" } else { "Lock  (L)" })
+        .clicked()
+    {
+        editor.set_locked(sid, !locked);
+        ui.close();
+    }
+    if ui.button("Bring to front").clicked() {
+        editor.send_surface(sid, true);
+        ui.close();
+    }
+    if ui.button("Send to back").clicked() {
+        editor.send_surface(sid, false);
+        ui.close();
+    }
+    if ui.button("Reset warp to full frame").clicked() {
+        editor.set_warp(sid, WarpKind::default());
+        editor.commit();
+        ui.close();
+    }
+    if ui.button("Delete").clicked() {
+        editor.selection = Selection::Surface {
+            id: sid.to_string(),
+            mask: None,
+        };
+        editor.extra_selected.clear();
+        editor.delete_selection();
+        ui.close();
+    }
 }
 
 fn describe(kind: &SourceKind) -> String {
@@ -232,25 +556,65 @@ fn describe(kind: &SourceKind) -> String {
     }
 }
 
+/// Inline id editor shared by the inspectors. Returns true when a rename happened.
+fn rename_box(ui: &mut egui::Ui, editor: &mut Editor, state: &mut PanelState, id: &str) -> bool {
+    let mut renamed = false;
+    ui.horizontal(|ui| {
+        let label = ui.label("Id");
+        let editing = state.rename.as_ref().is_some_and(|(orig, _)| orig == id);
+        let mut text = if editing {
+            state
+                .rename
+                .as_ref()
+                .map(|(_, t)| t.clone())
+                .unwrap_or_default()
+        } else {
+            id.to_string()
+        };
+        let r = ui.text_edit_singleline(&mut text).labelled_by(label.id);
+        if r.changed() {
+            state.rename = Some((id.to_string(), text.clone()));
+        }
+        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if (enter || (r.lost_focus() && editing)) && text != id {
+            match editor.rename(id, &text) {
+                Ok(()) => {
+                    state.error = None;
+                    renamed = true;
+                }
+                Err(e) => state.error = Some(e),
+            }
+            state.rename = None;
+        }
+    });
+    renamed
+}
+
 /// Right-hand inspector for the selection.
 pub fn inspector(
     ui: &mut egui::Ui,
     editor: &mut Editor,
     monitors: &[MonitorInfo],
     state: &mut PanelState,
+    actions: &mut Actions,
 ) {
     egui::Panel::right("lumen-right")
-        .default_size(300.0)
+        .default_size(310.0)
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| match editor.selection.clone() {
-                Selection::None => show_inspector(ui, editor, state),
-                Selection::Output(id) => output_inspector(ui, editor, &id, monitors),
+                Selection::None => show_inspector(ui, editor, state, actions),
+                Selection::Output(id) => output_inspector(ui, editor, &id, monitors, state),
                 Selection::Surface { id, mask } => surface_inspector(ui, editor, &id, mask, state),
             });
         });
 }
 
-fn show_inspector(ui: &mut egui::Ui, editor: &mut Editor, state: &mut PanelState) {
+fn show_inspector(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut PanelState,
+    actions: &mut Actions,
+) {
     ui.heading("Show");
     let mut name = editor.project.name.clone();
     let label = ui.label("Name");
@@ -271,14 +635,8 @@ fn show_inspector(ui: &mut egui::Ui, editor: &mut Editor, state: &mut PanelState
     });
     ui.label(RichText::new("Addresses: /show/blackout, /show/master, /surface/<id>/opacity|visible|z|corner/<n>/x|y, /output/<id>/enabled|brightness|contrast|gamma|blend/<edge>/width").weak().small());
     ui.separator();
-    let label = ui.heading("Add image source");
-    ui.text_edit_singleline(&mut state.image_path)
-        .labelled_by(label.id);
-    if ui.button("Add image").clicked() && !state.image_path.trim().is_empty() {
-        editor.add_source(SourceKind::Image {
-            path: state.image_path.trim().to_string(),
-        });
-        state.image_path.clear();
+    if ui.button("Add media…").clicked() {
+        actions.add_media = true;
     }
     let label = ui.heading("Add Spout source");
     ui.text_edit_singleline(&mut state.spout_sender)
@@ -292,10 +650,21 @@ fn show_inspector(ui: &mut egui::Ui, editor: &mut Editor, state: &mut PanelState
         ui.colored_label(Color32::LIGHT_RED, e);
     }
 }
-
 #[allow(clippy::too_many_lines)]
-fn output_inspector(ui: &mut egui::Ui, editor: &mut Editor, id: &str, monitors: &[MonitorInfo]) {
+fn output_inspector(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    id: &str,
+    monitors: &[MonitorInfo],
+    state: &mut PanelState,
+) {
     ui.heading(format!("Output {id}"));
+    if rename_box(ui, editor, state, id) {
+        return;
+    }
+    if ui.button("Identify on the projector").clicked() {
+        editor.identify(Instant::now());
+    }
     let Some(output) = editor.project.output(id).cloned() else {
         return;
     };
@@ -480,9 +849,54 @@ fn surface_inspector(
     state: &mut PanelState,
 ) {
     ui.heading(format!("Surface {id}"));
+    if rename_box(ui, editor, state, id) {
+        return;
+    }
     let Some(surface) = editor.project.surface(id).cloned() else {
         return;
     };
+    ui.horizontal(|ui| {
+        let mut locked = surface.locked;
+        if ui
+            .checkbox(&mut locked, "Locked")
+            .on_hover_text("No handles, no accidental drags (L)")
+            .changed()
+        {
+            editor.set_locked(id, locked);
+        }
+        if ui.button("Duplicate").on_hover_text("Ctrl+D").clicked() {
+            editor.duplicate_surface(id);
+        }
+        if ui
+            .button("Forward")
+            .on_hover_text("Draw this surface later (on top)")
+            .clicked()
+        {
+            editor.move_surface(id, 1);
+        }
+        if ui
+            .button("Backward")
+            .on_hover_text("Draw this surface earlier (underneath)")
+            .clicked()
+        {
+            editor.move_surface(id, -1);
+        }
+    });
+    ui.menu_button("Align", |ui| {
+        for (label, op) in [
+            ("Flip horizontal", AlignOp::FlipHorizontal),
+            ("Flip vertical", AlignOp::FlipVertical),
+            ("Rotate 90°", AlignOp::RotateQuarter),
+            ("Fit output", AlignOp::FitOutput),
+            ("Centre", AlignOp::Centre),
+            ("Match source aspect", AlignOp::MatchSourceAspect),
+        ] {
+            if ui.button(label).clicked() {
+                editor.align(id, op);
+                ui.close();
+            }
+        }
+    });
     // Source.
     let mut source = surface.source.clone();
     egui::ComboBox::from_label("Source")
@@ -710,8 +1124,16 @@ fn surface_inspector(
     }
 }
 
-/// Modal prompts: file paths and autosave recovery.
-pub fn dialogs(ctx: &egui::Context, editor: &mut Editor, state: &mut PanelState) {
+/// Modal prompts: autosave recovery, unsaved changes, welcome and the cheat sheet.
+#[allow(clippy::too_many_lines)]
+pub fn dialogs(
+    ctx: &egui::Context,
+    editor: &mut Editor,
+    state: &mut PanelState,
+    monitors: &[MonitorInfo],
+    settings: &Settings,
+    actions: &mut Actions,
+) {
     if let Some(auto) = editor.recovery.clone() {
         egui::Window::new("Recover autosave?")
             .collapsible(false)
@@ -731,58 +1153,155 @@ pub fn dialogs(ctx: &egui::Context, editor: &mut Editor, state: &mut PanelState)
                 });
             });
     }
-    let Some(kind) = state.path_dialog else {
-        return;
-    };
-    let title = match kind {
-        PathDialog::Open => "Open project",
-        PathDialog::SaveAs => "Save project as",
-    };
-    let mut close = false;
-    egui::Window::new(title)
-        .collapsible(false)
-        .resizable(false)
-        .show(ctx, |ui| {
-            let label = ui.label("Path to a .lumen.toml file:");
-            let r = ui
-                .text_edit_singleline(&mut state.path_text)
-                .labelled_by(label.id);
-            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            ui.horizontal(|ui| {
-                let action = match kind {
-                    PathDialog::Open => "Open file",
-                    PathDialog::SaveAs => "Save file",
-                };
-                if ui.button(action).clicked() || enter {
-                    let path = PathBuf::from(state.path_text.trim());
-                    let result = match kind {
-                        PathDialog::Open => Editor::open(&path)
-                            .map(|e| *editor = e)
-                            .map_err(|e| e.to_string()),
-                        PathDialog::SaveAs => editor.save_as(&path),
-                    };
-                    match result {
-                        Ok(()) => {
-                            state.error = None;
-                            close = true;
-                        }
-                        Err(e) => state.error = Some(e),
+    if let Some(pending) = editor.pending.clone() {
+        let what = match &pending {
+            Pending::Close => "quitting",
+            Pending::New => "starting a new project",
+            Pending::Open(_) => "opening another project",
+        };
+        egui::Window::new("Unsaved changes")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(format!("Save before {what}?"));
+                ui.horizontal(|ui| {
+                    if ui.button("Save and continue").clicked() {
+                        actions.save = true;
+                        actions.resolve_pending = Some(true);
                     }
+                    if ui.button("Discard changes").clicked() {
+                        actions.resolve_pending = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        actions.resolve_pending = Some(false);
+                    }
+                });
+            });
+    }
+    if state.welcome && !editor.show_mode {
+        egui::Window::new("Welcome to lumen").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+            ui.set_min_width(380.0);
+            ui.label("Map images onto walls, objects and screens with one or many projectors.");
+            ui.add_space(8.0);
+            let secondary = monitors.len().saturating_sub(1);
+            if monitors.len() > 1 {
+                ui.label(format!("{} displays detected. Make each extra display a projector output?", monitors.len()));
+                if ui.button(format!("Create {secondary} output(s) with a test grid")).clicked() {
+                    actions.create_outputs = true;
                 }
-                if ui.button("Cancel").clicked() {
-                    close = true;
+            } else {
+                ui.label(RichText::new("Only one display detected. Plug in a projector and reopen lumen, or map on this screen for now.").weak());
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Open a project…").clicked() {
+                    actions.open = true;
+                    state.welcome = false;
+                }
+                if ui.button("Start from the demo").clicked() {
+                    state.welcome = false;
+                }
+                if ui.button("Add media…").clicked() {
+                    actions.add_media = true;
+                    state.welcome = false;
                 }
             });
-            if let Some(e) = &state.error {
-                ui.colored_label(Color32::LIGHT_RED, e);
+            let recent = settings.existing_recent();
+            if !recent.is_empty() {
+                ui.add_space(8.0);
+                ui.label("Recent");
+                for p in recent.iter().take(6) {
+                    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    if ui.link(name).on_hover_text(p.display().to_string()).clicked() {
+                        actions.open_path = Some(p.clone());
+                        state.welcome = false;
+                    }
+                }
             }
+            ui.add_space(8.0);
+            ui.label(RichText::new("Tips: drag corners on the canvas or on the projector itself. Scroll to zoom, G for a grid, I to identify outputs, F10 for show mode, ? for every shortcut.").weak().small());
+            ui.horizontal(|ui| {
+                if ui.button("Close").clicked() {
+                    state.welcome = false;
+                }
+                if ui.button("Don't show again").clicked() {
+                    actions.skip_welcome = true;
+                }
+            });
         });
-    if close {
-        state.path_dialog = None;
+    }
+    if state.help {
+        egui::Window::new("Keyboard shortcuts")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                egui::Grid::new("shortcuts")
+                    .num_columns(2)
+                    .spacing([24.0, 4.0])
+                    .show(ui, |ui| {
+                        for (k, what) in SHORTCUTS {
+                            ui.label(RichText::new(*k).monospace());
+                            ui.label(*what);
+                            ui.end_row();
+                        }
+                    });
+                if ui.button("Close").clicked() {
+                    state.help = false;
+                }
+            });
+    }
+    if let Some(e) = state.error.clone() {
+        egui::Window::new("Problem")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.colored_label(Color32::LIGHT_RED, &e);
+                if ui.button("Dismiss").clicked() {
+                    state.error = None;
+                }
+            });
     }
 }
 
-/// Full-window status shown while in show mode.
+/// The cheat sheet.
+pub const SHORTCUTS: &[(&str, &str)] = &[
+    ("Drag handle", "Move a corner, control point or mask point"),
+    ("Shift+drag", "Move the whole surface or mask"),
+    (
+        "Arrows",
+        "Nudge the active handle by 1 px (Shift ×10, Alt ×0.1)",
+    ),
+    ("Click surface", "Select it (Shift adds to the selection)"),
+    ("Scroll / middle-drag", "Zoom and pan the canvas, 0 fits"),
+    ("G / S", "Toggle grid / snapping"),
+    ("L", "Lock or unlock the selected surface"),
+    ("Ctrl+D", "Duplicate the selected surface"),
+    ("Delete", "Delete the selection"),
+    ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
+    ("Ctrl+N / Ctrl+O / Ctrl+S", "New / open / save"),
+    ("I", "Identify: flash each output's name on its projector"),
+    ("B", "Blackout"),
+    ("F10", "Show mode; Escape twice leaves it"),
+    ("?", "This list"),
+];
+
+/// Overlay while files hover over the window.
+pub fn drop_overlay(ctx: &egui::Context) {
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::unique("drop-overlay"),
+    ));
+    let rect = ctx.content_rect();
+    painter.rect_filled(rect, 0.0, Color32::from_black_alpha(140));
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "Drop to add as sources",
+        egui::FontId::proportional(28.0),
+        Color32::WHITE,
+    );
+}
+
 pub fn show_mode_screen(ui: &mut egui::Ui, editor: &Editor, fps: f32) {
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(Color32::BLACK))
