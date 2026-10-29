@@ -1,0 +1,26 @@
+[package]
+name = "lumen-render"
+description = "Software reference renderer and wgpu renderer for lumen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+lumen-core.workspace = true
+lumen-sources.workspace = true
+wgpu.workspace = true
+bytemuck.workspace = true
+pollster.workspace = true
+image.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

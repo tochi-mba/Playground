@@ -1,0 +1,91 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "xtask"]
+default-members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tochi-mba/playground"
+authors = ["Tochi Mba"]
+publish = false
+
+[workspace.dependencies]
+# Internal crates
+lumen-core = { path = "crates/lumen-core" }
+lumen-render = { path = "crates/lumen-render" }
+lumen-sources = { path = "crates/lumen-sources" }
+lumen-control = { path = "crates/lumen-control" }
+
+# Serialisation and project files
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.9"
+
+# Errors and logging
+thiserror = "2.0"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+
+# Graphics
+wgpu = "30.0"
+bytemuck = { version = "1.25", features = ["derive"] }
+pollster = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+# Windowing and UI
+winit = "0.30"
+egui = "0.37"
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland"] }
+
+# Control
+rosc = "0.11"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Testing
+proptest = "1.7"
+tempfile = "3.20"
+assert_cmd = "2.0"
+predicates = "3.1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unused_qualifications = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+# Pedantic lints that fight idiomatic graphics code.
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+module_name_repetitions = "allow"
+similar_names = "allow"
+many_single_char_names = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+opt-level = 3
+panic = "abort"
+
+[profile.dev.package."*"]
+# Keep dependency code fast in debug builds so image/golden tests do not crawl.
+opt-level = 2

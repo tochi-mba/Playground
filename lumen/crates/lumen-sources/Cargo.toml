@@ -1,0 +1,27 @@
+[package]
+name = "lumen-sources"
+description = "Frame sources for lumen: test patterns, solid colours, images and Spout"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Receive live textures from Spout senders. Windows only; a no-op stub elsewhere.
+spout = []
+
+[dependencies]
+lumen-core.workspace = true
+image.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
