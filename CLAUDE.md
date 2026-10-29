@@ -8,7 +8,7 @@ own CLAUDE.md; read that file before working inside it.
   and its Claude skill in `.claude/skills/device-test/`, because GitHub and Claude Code only read
   those from the repo root.
 - `lumen/` used to hold the lumap projection-mapping app; it now lives in its own repository,
-  https://github.com/tochi-mba/lumap (an AREX Technologies product).
+  https://github.com/tochi-mba/lumap (a REX Technologies product).
 
 Workflows are path-filtered to their folder, so changes in one experiment do not trigger the
 other's builds. Release tags and artifact names are prefixed with the project slug
