@@ -1,6 +1,6 @@
 //! Developer tasks: `cargo xtask ci` runs the same gate as the CI workflow, locally.
 //!
-//! Steps: fmt check, clippy (all targets, all features, warnings denied), rustdoc, cargo-deny,
+//! Steps: file-length check (no source file over 1000 lines), fmt check, clippy (all targets, all features, warnings denied), rustdoc, cargo-deny,
 //! tests (nextest when installed, `cargo test` otherwise) and, when `cargo-llvm-cov` is
 //! installed, a coverage report with the same floors CI enforces.
 
@@ -14,6 +14,52 @@ use std::process::Command;
 pub const COVERAGE_FLOOR_TOTAL: f64 = 85.0;
 /// Minimum line coverage for `lumen-core`, in percent.
 pub const COVERAGE_FLOOR_CORE: f64 = 95.0;
+/// Longest a source file may be; longer ones get split into modules.
+pub const MAX_FILE_LINES: usize = 1000;
+
+/// Source files (Rust, WGSL, HTML, TOML, Markdown, YAML) under `dir` that exceed
+/// [`MAX_FILE_LINES`], as `path: lines`.
+pub fn long_files(dir: &Path) -> anyhow::Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).with_context(|| format!("reading {}", d.display()))? {
+            let path = entry?.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if path.is_dir() {
+                if !matches!(name, "target" | ".git" | "node_modules") {
+                    stack.push(path);
+                }
+                continue;
+            }
+            let counted = matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("rs" | "wgsl" | "html" | "toml" | "md" | "yml" | "yaml")
+            ) && name != "Cargo.lock";
+            if counted {
+                let lines = std::fs::read_to_string(&path)
+                    .with_context(|| format!("reading {}", path.display()))?
+                    .lines()
+                    .count();
+                if lines > MAX_FILE_LINES {
+                    out.push(format!("{}: {lines}", path.display()));
+                }
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+fn check_file_lengths() -> anyhow::Result<()> {
+    println!("==> file lengths (max {MAX_FILE_LINES} lines)");
+    let long = long_files(&root())?;
+    if long.is_empty() {
+        Ok(())
+    } else {
+        bail!("files over {MAX_FILE_LINES} lines: {}", long.join(", "))
+    }
+}
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -48,6 +94,7 @@ fn has_subcommand(name: &str) -> bool {
 }
 
 fn ci() -> anyhow::Result<()> {
+    check_file_lengths()?;
     run("fmt", cargo(&["fmt", "--all", "--check"]))?;
     run(
         "clippy",
@@ -200,6 +247,7 @@ fn main() -> anyhow::Result<()> {
     let task = std::env::args().nth(1).unwrap_or_default();
     match task.as_str() {
         "ci" => ci(),
+        "file-lengths" => check_file_lengths(),
         "coverage" => coverage(),
         "check-coverage" => {
             let path = std::env::args()
@@ -213,7 +261,7 @@ fn main() -> anyhow::Result<()> {
             );
             check_floors(&report)
         }
-        _ => bail!("usage: cargo xtask <ci|coverage|check-coverage FILE>"),
+        _ => bail!("usage: cargo xtask <ci|file-lengths|coverage|check-coverage FILE>"),
     }
 }
 
@@ -240,6 +288,21 @@ mod tests {
                 .core,
             0.0
         );
+    }
+
+    #[test]
+    fn long_files_are_found_and_the_tree_is_within_the_limit() {
+        let dir = std::env::temp_dir().join(format!("xtask-long-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("target")).unwrap();
+        std::fs::write(dir.join("short.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(dir.join("long.rs"), "//\n".repeat(MAX_FILE_LINES + 1)).unwrap();
+        std::fs::write(dir.join("long.png"), "x\n".repeat(MAX_FILE_LINES + 1)).unwrap();
+        std::fs::write(dir.join("target").join("gen.rs"), "x\n".repeat(2000)).unwrap();
+        let found = long_files(&dir).unwrap();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].ends_with(&format!("long.rs: {}", MAX_FILE_LINES + 1)));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(long_files(&root()).unwrap(), Vec::<String>::new());
     }
 
     #[test]

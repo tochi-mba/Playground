@@ -6,6 +6,28 @@ All notable changes to lumen are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Welcome screen that creates an output per detected display, recent files, native file
+  dialogs, drag-and-drop of media, unsaved-changes prompts and a keyboard cheat sheet.
+- Edit on the wall: output windows show the same handles as the canvas; identify flashes
+  each output's name on its projector; cursor hides on idle outputs.
+- Canvas zoom and pan, output-space grid with snapping, numeric readout of the active
+  handle, fine and coarse nudges, align operations, duplicate, lock, rename, reorder and
+  context menus.
+- Video (`ffmpeg` subprocess), image sequences, GIFs and six animated generators with a
+  shared transport (`/source/<id>/play|loop|speed|restart`); thumbnails and a draggable
+  crop preview.
+- Cues: stored looks with crossfades, GO on Space, a button, OSC (`/cue/go`,
+  `/cue/<id>/go`, `/cue/stop`), MIDI or the phone remote.
+- MIDI learn for any parameter (fader, button and switch modes), saved in the project.
+- OSC feedback of every changed parameter to a `host:port`.
+- Phone remote: `lumen show --remote-port 8080` serves a page with blackout, master,
+  output levels, surface opacities and the cue list; the editor shows a QR code of it.
+- Settings file (`settings.toml` in the OS config directory) for ports, grid, snap,
+  autosave interval and the ffmpeg path.
+- `cargo xtask file-lengths` (also in `cargo xtask ci`): no source file over 1000 lines.
+
 ## [0.1.0] - 2026-10-29
 
 ### Added

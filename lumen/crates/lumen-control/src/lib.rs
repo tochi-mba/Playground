@@ -1,4 +1,4 @@
-//! Remote control.
+//! Remote control: OSC in and out, MIDI in, and a phone web remote.
 //!
 //! An OSC message `/surface/wall/opacity 0.5` becomes a [`ParamPatch`] for the same address,
 //! so anything that speaks OSC (`TouchOSC`, `QLab`, Max, a show controller) drives the same
@@ -6,6 +6,10 @@
 //! a thin thread around it.
 
 #![forbid(unsafe_code)]
+
+pub mod feedback;
+pub mod midi;
+pub mod web;
 
 use lumen_core::params::{ParamAddress, ParamPatch, ParamValue};
 use rosc::{OscPacket, OscType};

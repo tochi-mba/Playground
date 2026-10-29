@@ -33,6 +33,8 @@ pub struct Launch {
     pub show: bool,
     /// Relaunch after a stall of this many seconds (show mode only).
     pub restart_on_stall: Option<f64>,
+    /// Phone remote port from the command line; `None` uses the saved setting.
+    pub remote_port: Option<u16>,
 }
 
 /// A monitor the OS reported at startup.
@@ -152,6 +154,11 @@ impl LumenApp {
         surface_format: wgpu::TextureFormat,
     ) -> Self {
         editor.set_osc_port(launch.osc_port);
+        if let Some(port) = launch.remote_port {
+            if let Err(e) = editor.set_remote_port(port) {
+                log::warn!("remote: {e}");
+            }
+        }
         if launch.show {
             editor.enter_show_mode();
         }
@@ -188,6 +195,28 @@ impl LumenApp {
             apply_ffmpeg_path(&settings.ffmpeg_path);
             self.panels.ffmpeg_ok = lumen_sources::video::Tools::from_env().available();
             self.panels.ffmpeg_path.clone_from(&settings.ffmpeg_path);
+        }
+        if !settings.midi_port.is_empty() {
+            self.panels.midi_port.clone_from(&settings.midi_port);
+            if let Err(e) = self.editor.set_midi_port(Some(&settings.midi_port)) {
+                log::warn!("midi: {e}");
+            }
+        }
+        if !settings.osc_feedback.is_empty() {
+            self.panels
+                .feedback_target
+                .clone_from(&settings.osc_feedback);
+            if let Err(e) = self.editor.set_feedback(&settings.osc_feedback) {
+                log::warn!("osc feedback: {e}");
+            }
+        }
+        if settings.remote_port != 0 {
+            self.panels.remote_port = settings.remote_port;
+            if self.editor.remote.is_none() {
+                if let Err(e) = self.editor.set_remote_port(settings.remote_port) {
+                    log::warn!("remote: {e}");
+                }
+            }
         }
         self.canvas.show_grid = settings.show_grid;
         self.canvas.grid_divisions = settings.grid_divisions.clamp(2, 64);
@@ -318,6 +347,7 @@ impl LumenApp {
             duplicate: i.consume_key(Modifiers::COMMAND, Key::D),
             show: i.consume_key(Modifiers::NONE, Key::F10),
             escape: i.consume_key(Modifiers::NONE, Key::Escape),
+            go: !typing && i.consume_key(Modifiers::NONE, Key::Space),
             delete: i.consume_key(Modifiers::NONE, Key::Delete)
                 || i.consume_key(Modifiers::NONE, Key::Backspace),
             blackout: i.consume_key(Modifiers::NONE, Key::B),
@@ -373,6 +403,10 @@ impl LumenApp {
             if let Selection::Surface { id, .. } = self.editor.selection.clone() {
                 self.editor.duplicate_surface(&id);
             }
+        }
+        if k.go {
+            let clock = self.editor.sources.time();
+            self.editor.cue_go_next(clock);
         }
         if k.blackout {
             let on = self.editor.project.blackout;
@@ -455,6 +489,7 @@ struct Shortcuts {
     duplicate: bool,
     show: bool,
     escape: bool,
+    go: bool,
     delete: bool,
     blackout: bool,
     identify: bool,
@@ -466,11 +501,8 @@ struct Shortcuts {
 }
 
 impl LumenApp {
-    /// One frame of the whole application: input, panels, canvas, output windows.
-    pub fn frame(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        self.heartbeat.beat();
-        let now = Instant::now();
+    /// Advances the clock, the sources and every controller. Returns the show clock.
+    fn tick(&mut self, ctx: &egui::Context, now: Instant) -> f64 {
         self.frame_times.push_back(now);
         while self.frame_times.len() > 60 {
             self.frame_times.pop_front();
@@ -490,9 +522,24 @@ impl LumenApp {
         self.panels
             .thumbs
             .retain(|id| project_sources.iter().any(|s| s == id));
+        let clock = self.editor.sources.time();
         if self.editor.poll_osc() > 0 {
             ctx.request_repaint();
         }
+        self.editor.poll_midi(clock);
+        self.editor.poll_remote(clock);
+        if self.editor.tick_cues(clock) > 0 || self.editor.cues.is_fading() {
+            ctx.request_repaint();
+        }
+        clock
+    }
+
+    /// One frame of the whole application: input, panels, canvas, output windows.
+    pub fn frame(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        self.heartbeat.beat();
+        let now = Instant::now();
+        let clock = self.tick(&ctx, now);
         self.editor.maybe_autosave(now);
         self.handle_close_request(&ctx);
         self.handle_dropped_files(&ctx);
@@ -516,6 +563,7 @@ impl LumenApp {
                 &mut actions,
             );
             panels::status_bar(ui, &self.editor, &self.canvas, self.fps(), now);
+            panels::cue_panel(ui, &mut self.editor, &mut self.panels, clock);
             panels::left_panel(ui, &mut self.editor, &mut self.panels, &mut actions);
             panels::inspector(
                 ui,
@@ -604,6 +652,38 @@ impl LumenApp {
                 apply_ffmpeg_path(&path);
                 self.panels.ffmpeg_ok = lumen_sources::video::Tools::from_env().available();
                 self.editor.reload_sources();
+            }
+        }
+        if let Some(port) = actions.midi_port {
+            let r = self
+                .editor
+                .set_midi_port((!port.is_empty()).then_some(port.as_str()));
+            if let Err(e) = r {
+                self.panels.error = Some(e);
+            } else {
+                self.panels.error = None;
+                self.settings.midi_port = port;
+                self.settings.save();
+            }
+        }
+        if let Some(target) = actions.feedback {
+            match self.editor.set_feedback(&target) {
+                Ok(()) => {
+                    self.panels.error = None;
+                    self.settings.osc_feedback = target;
+                    self.settings.save();
+                }
+                Err(e) => self.panels.error = Some(e),
+            }
+        }
+        if let Some(port) = actions.remote_port {
+            match self.editor.set_remote_port(port) {
+                Ok(()) => {
+                    self.panels.error = None;
+                    self.settings.remote_port = port;
+                    self.settings.save();
+                }
+                Err(e) => self.panels.error = Some(e),
             }
         }
         if actions.create_outputs {

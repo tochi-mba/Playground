@@ -12,6 +12,11 @@ publish.workspace = true
 [dependencies]
 lumen-core.workspace = true
 rosc.workspace = true
+midir.workspace = true
+tiny_http.workspace = true
+qrcode.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 log.workspace = true
 

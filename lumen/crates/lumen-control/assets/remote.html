@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lumen remote</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: #111; color: #eee; padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 12px; display: flex; justify-content: space-between; align-items: baseline; }
+  h1 small { color: #888; font-weight: normal; font-size: 12px; }
+  section { margin-bottom: 20px; }
+  h2 { font-size: 13px; color: #9ad; text-transform: uppercase; letter-spacing: .08em; margin: 0 0 8px; }
+  .row { display: flex; align-items: center; gap: 12px; margin: 6px 0; }
+  .row label { flex: 0 0 38%; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  input[type=range] { flex: 1; accent-color: #5ac8ff; }
+  button { font: inherit; padding: 10px 14px; border-radius: 8px; border: 1px solid #333; background: #222; color: #eee; }
+  button.go { width: 100%; padding: 18px; font-size: 20px; background: #2a6; border: none; margin-top: 8px; }
+  button.blackout { background: #622; }
+  button.on { background: #a22; }
+  .cue { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #222; }
+  .cue.current { color: #5ac8ff; }
+  #status { color: #888; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>lumen <small id="status">connecting…</small></h1>
+<section>
+  <button id="blackout" class="blackout">Blackout</button>
+  <div class="row"><label>Master</label><input type="range" id="master" min="0" max="1" step="0.01"></div>
+</section>
+<section><h2>Cues</h2><div id="cues"></div><button class="go" id="go">GO</button></section>
+<section><h2>Outputs</h2><div id="outputs"></div></section>
+<section><h2>Surfaces</h2><div id="surfaces"></div></section>
+<script>
+const state = { params: {}, cues: [], current: null };
+let dragging = null;
+async function post(url, body) {
+  try { await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); }
+  catch (e) { document.getElementById('status').textContent = 'offline'; }
+}
+function setParam(address, value) { post('/api/param', { address, value }); }
+function slider(container, label, address, value) {
+  let row = container.querySelector(`[data-address="${address}"]`);
+  if (!row) {
+    row = document.createElement('div'); row.className = 'row'; row.dataset.address = address;
+    row.innerHTML = `<label>${label}</label><input type="range" min="0" max="1" step="0.01">`;
+    const input = row.querySelector('input');
+    input.addEventListener('input', () => { dragging = address; setParam(address, parseFloat(input.value)); });
+    input.addEventListener('change', () => { dragging = null; });
+    container.appendChild(row);
+  }
+  if (dragging !== address) row.querySelector('input').value = value;
+}
+function render() {
+  const p = state.params;
+  const bo = document.getElementById('blackout');
+  bo.classList.toggle('on', !!p['/show/blackout']);
+  bo.textContent = p['/show/blackout'] ? 'BLACKOUT (tap to clear)' : 'Blackout';
+  if (dragging !== '/show/master') document.getElementById('master').value = p['/show/master'] ?? 1;
+  const outputs = document.getElementById('outputs'), surfaces = document.getElementById('surfaces');
+  for (const [address, value] of Object.entries(p)) {
+    if (address.startsWith('/output/') && address.endsWith('/brightness')) slider(outputs, address.split('/')[2], address, value);
+    if (address.startsWith('/surface/') && address.endsWith('/opacity')) slider(surfaces, address.split('/')[2], address, value);
+  }
+  const cues = document.getElementById('cues'); cues.innerHTML = '';
+  state.cues.forEach((c, i) => {
+    const div = document.createElement('div'); div.className = 'cue' + (i === state.current ? ' current' : '');
+    div.innerHTML = `<span>${i + 1}. ${c.name || c.id} <small>${c.fade}s</small></span>`;
+    const b = document.createElement('button'); b.textContent = 'GO'; b.onclick = () => post('/api/cue/go', { id: c.id });
+    div.appendChild(b); cues.appendChild(div);
+  });
+}
+async function poll() {
+  try {
+    const r = await fetch('/api/state'); const s = await r.json();
+    state.params = s.params; state.cues = s.cues; state.current = s.current;
+    document.getElementById('status').textContent = s.name || 'connected';
+    render();
+  } catch (e) { document.getElementById('status').textContent = 'offline'; }
+  setTimeout(poll, 500);
+}
+document.getElementById('blackout').onclick = () => setParam('/show/blackout', !state.params['/show/blackout']);
+document.getElementById('master').addEventListener('input', e => { dragging = '/show/master'; setParam('/show/master', parseFloat(e.target.value)); });
+document.getElementById('master').addEventListener('change', () => { dragging = null; });
+document.getElementById('go').onclick = () => post('/api/cue/go', {});
+poll();
+</script>
+</body>
+</html>

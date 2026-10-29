@@ -9,14 +9,18 @@
 //! - [`blend`]: soft-edge blending curves for overlapping projectors.
 //! - [`mask`]: feathered polygon masks.
 //! - [`params`]: typed parameter addresses shared by the editor, OSC and tests.
+//! - [`cues`]: stored looks and the crossfade engine between them.
+//! - [`midimap`]: MIDI messages mapped onto parameter addresses.
 //! - [`project`]: the versioned, plain-text project file.
 //! - [`undo`]: command history with drag coalescing.
 
 #![forbid(unsafe_code)]
 
 pub mod blend;
+pub mod cues;
 pub mod geom;
 pub mod mask;
+pub mod midimap;
 pub mod params;
 pub mod project;
 pub mod undo;

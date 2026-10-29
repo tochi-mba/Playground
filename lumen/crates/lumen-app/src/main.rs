@@ -42,6 +42,9 @@ enum Command {
         /// Relaunch the show if the render loop stalls for more than this many seconds.
         #[arg(long)]
         restart_on_stall: Option<f64>,
+        /// Serve the phone remote on this port (0 disables; omit to use the saved setting).
+        #[arg(long)]
+        remote_port: Option<u16>,
     },
     /// Render outputs to PNG files without opening a window.
     Render(cli::RenderArgs),
@@ -77,16 +80,19 @@ fn main() -> ExitCode {
             osc_port: args.osc_port,
             show: false,
             restart_on_stall: None,
+            remote_port: None,
         }),
         Some(Command::Show {
             project,
             osc_port,
             restart_on_stall,
+            remote_port,
         }) => editor::run(&editor::Launch {
             project: Some(project),
             osc_port,
             show: true,
             restart_on_stall,
+            remote_port,
         }),
         Some(Command::Render(render)) => cli::render(&render),
         Some(Command::Validate { project }) => cli::validate(&project),

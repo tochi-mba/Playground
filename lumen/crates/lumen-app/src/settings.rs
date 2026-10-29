@@ -32,6 +32,12 @@ pub struct Settings {
     pub skip_welcome: bool,
     /// Explicit ffmpeg binary; empty means "search the PATH".
     pub ffmpeg_path: String,
+    /// Phone remote port (`0` off).
+    pub remote_port: u16,
+    /// MIDI input port name to open at start; empty means none.
+    pub midi_port: String,
+    /// OSC feedback destination `host:port`; empty means off.
+    pub osc_feedback: String,
 }
 
 impl Default for Settings {
@@ -46,6 +52,9 @@ impl Default for Settings {
             autosave_seconds: 10,
             skip_welcome: false,
             ffmpeg_path: String::new(),
+            remote_port: 0,
+            midi_port: String::new(),
+            osc_feedback: String::new(),
         }
     }
 }
