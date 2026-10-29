@@ -103,59 +103,114 @@ pub fn to_rgba(pixels: &mut [u8], sender_format: u32) {
 mod native {
     //! The Windows receiver. Never compiled in this repository's Linux CI beyond `cargo check`
     //! on the stub crate, so keep it small and obviously correct.
+    //!
+    //! `spout2::dx::Receiver` holds a raw pointer and is not `Send`, while every
+    //! [`super::FrameSource`] must be. The receiver therefore lives on its own thread, which
+    //! owns it from creation to drop, and frames cross to the app over a channel.
     use super::{to_rgba, Frame};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::{channel, Receiver, TryRecvError};
+    use std::sync::Arc;
+    use std::thread::JoinHandle;
+    use std::time::Duration;
+
+    enum Msg {
+        Frame(Frame),
+        Disconnected,
+    }
 
     pub struct Native {
-        rx: spout2::dx::Receiver,
-        width: u32,
-        height: u32,
-        pixels: Vec<u8>,
+        rx: Receiver<Msg>,
+        stop: Arc<AtomicBool>,
+        thread: Option<JoinHandle<()>>,
     }
 
     impl Native {
         pub fn open(sender: &str) -> Option<Self> {
-            let name = (!sender.trim().is_empty()).then(|| sender.trim());
-            match spout2::dx::Receiver::new(name) {
-                Ok(rx) => Some(Self {
+            let name = sender.trim().to_string();
+            let (tx, rx) = channel();
+            let stop = Arc::new(AtomicBool::new(false));
+            let stop_in_thread = Arc::clone(&stop);
+            let thread = std::thread::Builder::new()
+                .name(format!("spout:{name}"))
+                .spawn(move || {
+                    let receiver =
+                        spout2::dx::Receiver::new((!name.is_empty()).then_some(name.as_str()));
+                    let mut receiver = match receiver {
+                        Ok(r) => r,
+                        Err(e) => {
+                            log::warn!("spout: {e}");
+                            return;
+                        }
+                    };
+                    let (mut width, mut height) = (64u32, 64u32);
+                    let mut pixels = vec![0u8; (width * height * 4) as usize];
+                    let mut was_connected = false;
+                    while !stop_in_thread.load(Ordering::Relaxed) {
+                        let connected = receiver
+                            .receive_image(&mut pixels, width, height, false, false)
+                            .unwrap_or(false);
+                        if receiver.is_updated() {
+                            let (w, h) = receiver.sender_size();
+                            width = w.max(1);
+                            height = h.max(1);
+                            pixels = vec![0; (width * height * 4) as usize];
+                            continue;
+                        }
+                        if connected && receiver.is_frame_new() {
+                            let mut rgba = pixels.clone();
+                            to_rgba(&mut rgba, receiver.sender_format());
+                            if tx
+                                .send(Msg::Frame(Frame {
+                                    width,
+                                    height,
+                                    rgba,
+                                }))
+                                .is_err()
+                            {
+                                return;
+                            }
+                        } else if was_connected && !connected && tx.send(Msg::Disconnected).is_err()
+                        {
+                            return;
+                        }
+                        was_connected = connected;
+                        std::thread::sleep(Duration::from_millis(if connected { 4 } else { 100 }));
+                    }
+                });
+            match thread {
+                Ok(thread) => Some(Self {
                     rx,
-                    width: 64,
-                    height: 64,
-                    pixels: vec![0; 64 * 64 * 4],
+                    stop,
+                    thread: Some(thread),
                 }),
                 Err(e) => {
-                    log::warn!("spout: {e}");
+                    log::warn!("spout: cannot start the receiver thread: {e}");
                     None
                 }
             }
         }
 
-        /// `None` when no sender is connected, `Some(None)` when connected without a new
-        /// frame, `Some(Some(frame))` for a new frame.
+        /// `None` when the sender went away, `Some(None)` when nothing new arrived,
+        /// `Some(Some(frame))` for the newest frame since the last poll.
         pub fn poll(&mut self) -> Option<Option<Frame>> {
-            let connected = self
-                .rx
-                .receive_image(&mut self.pixels, self.width, self.height, false, false)
-                .unwrap_or(false);
-            if self.rx.is_updated() {
-                let (w, h) = self.rx.sender_size();
-                self.width = w.max(1);
-                self.height = h.max(1);
-                self.pixels = vec![0; (self.width * self.height * 4) as usize];
-                return Some(None);
+            let mut latest = Some(None);
+            loop {
+                match self.rx.try_recv() {
+                    Ok(Msg::Frame(f)) => latest = Some(Some(f)),
+                    Ok(Msg::Disconnected) => latest = None,
+                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => return latest,
+                }
             }
-            if !connected {
-                return None;
+        }
+    }
+
+    impl Drop for Native {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
             }
-            if !self.rx.is_frame_new() {
-                return Some(None);
-            }
-            let mut rgba = self.pixels.clone();
-            to_rgba(&mut rgba, self.rx.sender_format());
-            Some(Some(Frame {
-                width: self.width,
-                height: self.height,
-                rgba,
-            }))
         }
     }
 }
