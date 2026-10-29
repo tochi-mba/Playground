@@ -5,6 +5,10 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+# Unmaintained crates are an error only when this workspace depends on them directly.
+# Transitive ones (today: ttf-parser via egui's font stack, RUSTSEC-2026-0192) are upstream's
+# call; `cargo deny check advisories` still lists them as warnings so they stay visible.
+unmaintained = "workspace"
 ignore = []
 
 [licenses]

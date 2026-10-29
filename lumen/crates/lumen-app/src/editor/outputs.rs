@@ -144,7 +144,7 @@ pub fn show_output_windows(
         let viewport_id = egui::ViewportId::from_hash_of(("lumen-output", &id));
         let mut close = false;
         let mut outer = None;
-        ctx.show_viewport_immediate(viewport_id, builder, |ui, _class| {
+        ctx.show_viewport_immediate(viewport_id, builder, |ui, class| {
             let rect = ui.max_rect();
             ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
             if let Some(scene) = &scene {
@@ -152,7 +152,13 @@ pub fn show_output_windows(
             }
             let info = ui.input(|i| i.viewport().clone());
             close = info.close_requested();
-            outer = info.outer_rect;
+            // A backend without native viewports embeds the output as an egui window; its
+            // rect inside the editor is still a useful "position" for the placement button.
+            outer = if class == egui::ViewportClass::Immediate {
+                info.outer_rect
+            } else {
+                Some(ui.max_rect())
+            };
         });
         if let Some(r) = outer {
             editor

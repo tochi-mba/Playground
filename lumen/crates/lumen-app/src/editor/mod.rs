@@ -4,6 +4,8 @@ mod canvas;
 mod outputs;
 mod panels;
 mod state;
+#[cfg(test)]
+mod ui_tests;
 
 use crate::watchdog::{Heartbeat, Watchdog};
 use eframe::egui;
@@ -119,6 +121,7 @@ pub struct LumenApp {
     canvas: canvas::CanvasState,
     panels: panels::PanelState,
     frame_times: std::collections::VecDeque<Instant>,
+    last_title: String,
 }
 
 impl LumenApp {
@@ -150,6 +153,7 @@ impl LumenApp {
             canvas: canvas::CanvasState::default(),
             panels: panels::PanelState::default(),
             frame_times: std::collections::VecDeque::new(),
+            last_title: String::new(),
         }
     }
 
@@ -181,7 +185,7 @@ impl LumenApp {
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::S),
                 i.consume_key(egui::Modifiers::NONE, egui::Key::F10),
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) && !i.focused,
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Delete),
             )
         });
         let typing = ctx.egui_wants_keyboard_input();
@@ -210,8 +214,9 @@ impl LumenApp {
     }
 }
 
-impl eframe::App for LumenApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+impl LumenApp {
+    /// One frame of the whole application: input, panels, canvas, output windows.
+    pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.heartbeat.beat();
         let now = Instant::now();
@@ -225,7 +230,11 @@ impl eframe::App for LumenApp {
         }
         self.editor.maybe_autosave(now);
         self.handle_shortcuts(&ctx);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.editor.title()));
+        let title = self.editor.title();
+        if title != self.last_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.last_title = title;
+        }
 
         if self.editor.show_mode {
             let fps = self.fps();
@@ -247,6 +256,12 @@ impl eframe::App for LumenApp {
         if !self.editor.sources.live_ids().is_empty() || self.editor.show_mode {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
+    }
+}
+
+impl eframe::App for LumenApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.frame(ui);
     }
 }
 

@@ -29,6 +29,8 @@ pub struct CanvasState {
     pub active: Option<Handle>,
     /// Which output the canvas shows; defaults to the selection's output or the first.
     pub output: Option<String>,
+    /// Screen rect of the preview during the last frame (tests use it to aim the pointer).
+    pub last_rect: Option<Rect>,
 }
 
 /// Maps a normalised point to screen space inside `rect`.
@@ -178,6 +180,7 @@ pub fn show(
 
     let avail = ui.available_rect_before_wrap().shrink(12.0);
     let rect = fit_rect(avail, output.width as f32 / output.height.max(1) as f32);
+    state.last_rect = Some(rect);
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
     if let Some(scene) = scene_for(editor, &output_id) {
@@ -230,7 +233,10 @@ pub fn show(
     let pointer = response.interact_pointer_pos();
     let shift = ui.input(|i| i.modifiers.shift);
     if response.drag_started() {
-        state.active = pointer
+        // Pick where the button went down, not where the pointer is now that the drag
+        // threshold has been crossed.
+        let origin = ui.input(|i| i.pointer.press_origin()).or(pointer);
+        state.active = origin
             .and_then(|pos| pick(rect, &list, pos, GRAB_RADIUS))
             .or(if shift { Some(Handle::All) } else { None });
     }

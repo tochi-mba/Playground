@@ -146,7 +146,7 @@ pub fn left_panel(ui: &mut egui::Ui, editor: &mut Editor) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Outputs");
-                if ui.small_button("+").on_hover_text("Add output").clicked() {
+                if ui.small_button("+ output").clicked() {
                     editor.add_output();
                 }
             });
@@ -155,7 +155,7 @@ pub fn left_panel(ui: &mut egui::Ui, editor: &mut Editor) {
                 let selected = editor.selection == Selection::Output(id.clone());
                 ui.horizontal(|ui| {
                     let open = editor.open_outputs.contains(&id);
-                    if ui.selectable_label(open, if open { "▣" } else { "▢" }).on_hover_text("Toggle output window").clicked() {
+                    if ui.selectable_label(open, "win").on_hover_text("Toggle output window").clicked() {
                         editor.toggle_output_window(&id);
                     }
                     if ui.selectable_label(selected, &id).clicked() {
@@ -171,7 +171,7 @@ pub fn left_panel(ui: &mut egui::Ui, editor: &mut Editor) {
                         let selected = matches!(&editor.selection, Selection::Surface { id, .. } if *id == sid);
                         ui.horizontal(|ui| {
                             let mut v = visible;
-                            if ui.checkbox(&mut v, "").on_hover_text("Visible").changed() {
+                            if ui.checkbox(&mut v, "").on_hover_text("Show or hide").changed() {
                                 editor.set_param(&format!("/surface/{sid}/visible"), ParamValue::Bool(v));
                                 editor.commit();
                             }
@@ -185,7 +185,7 @@ pub fn left_panel(ui: &mut egui::Ui, editor: &mut Editor) {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.heading("Sources");
-                ui.menu_button("+", |ui| {
+                ui.menu_button("+ source", |ui| {
                     for (label, pattern) in [("Grid", TestPattern::Grid), ("Bars", TestPattern::Bars), ("Checker", TestPattern::Checker), ("Ramp", TestPattern::Ramp)] {
                         if ui.button(format!("Pattern: {label}")).clicked() {
                             editor.add_source(SourceKind::TestPattern { pattern });
@@ -253,7 +253,13 @@ pub fn inspector(
 fn show_inspector(ui: &mut egui::Ui, editor: &mut Editor, state: &mut PanelState) {
     ui.heading("Show");
     let mut name = editor.project.name.clone();
-    if ui.text_edit_singleline(&mut name).lost_focus() && name != editor.project.name {
+    let label = ui.label("Name");
+    if ui
+        .text_edit_singleline(&mut name)
+        .labelled_by(label.id)
+        .lost_focus()
+        && name != editor.project.name
+    {
         editor.edit(|p| p.name = name);
     }
     param_toggle(ui, editor, "Blackout", "/show/blackout");
@@ -265,16 +271,18 @@ fn show_inspector(ui: &mut egui::Ui, editor: &mut Editor, state: &mut PanelState
     });
     ui.label(RichText::new("Addresses: /show/blackout, /show/master, /surface/<id>/opacity|visible|z|corner/<n>/x|y, /output/<id>/enabled|brightness|contrast|gamma|blend/<edge>/width").weak().small());
     ui.separator();
-    ui.heading("Add image source");
-    ui.text_edit_singleline(&mut state.image_path);
+    let label = ui.heading("Add image source");
+    ui.text_edit_singleline(&mut state.image_path)
+        .labelled_by(label.id);
     if ui.button("Add image").clicked() && !state.image_path.trim().is_empty() {
         editor.add_source(SourceKind::Image {
             path: state.image_path.trim().to_string(),
         });
         state.image_path.clear();
     }
-    ui.heading("Add Spout source");
-    ui.text_edit_singleline(&mut state.spout_sender);
+    let label = ui.heading("Add Spout source");
+    ui.text_edit_singleline(&mut state.spout_sender)
+        .labelled_by(label.id);
     if ui.button("Add Spout receiver").clicked() {
         editor.add_source(SourceKind::Spout {
             sender: state.spout_sender.trim().to_string(),
@@ -735,11 +743,17 @@ pub fn dialogs(ctx: &egui::Context, editor: &mut Editor, state: &mut PanelState)
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {
-            ui.label("Path to a .lumen.toml file:");
-            let r = ui.text_edit_singleline(&mut state.path_text);
+            let label = ui.label("Path to a .lumen.toml file:");
+            let r = ui
+                .text_edit_singleline(&mut state.path_text)
+                .labelled_by(label.id);
             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             ui.horizontal(|ui| {
-                if ui.button(title).clicked() || enter {
+                let action = match kind {
+                    PathDialog::Open => "Open file",
+                    PathDialog::SaveAs => "Save file",
+                };
+                if ui.button(action).clicked() || enter {
                     let path = PathBuf::from(state.path_text.trim());
                     let result = match kind {
                         PathDialog::Open => Editor::open(&path)
