@@ -151,6 +151,7 @@ struct CachedTexture {
 struct Composite {
     view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
+    uniforms: wgpu::Buffer,
     width: u32,
     height: u32,
 }
@@ -166,10 +167,9 @@ pub struct GpuRenderer {
     post_module: wgpu::ShaderModule,
     post_pipeline_layout: wgpu::PipelineLayout,
     post_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
-    post_uniforms: wgpu::Buffer,
     textures: HashMap<String, CachedTexture>,
     masks: HashMap<String, (wgpu::TextureView, Vec<u8>)>,
-    composite: Option<Composite>,
+    composites: HashMap<String, Composite>,
 }
 
 impl GpuRenderer {
@@ -286,12 +286,6 @@ impl GpuRenderer {
             bind_group_layouts: &[Some(&post_layout)],
             ..Default::default()
         });
-        let post_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("lumen post uniforms"),
-            size: size_of::<PostUniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         Self {
             device,
             queue,
@@ -302,16 +296,88 @@ impl GpuRenderer {
             post_module,
             post_pipeline_layout,
             post_pipelines: HashMap::new(),
-            post_uniforms,
             textures: HashMap::new(),
             masks: HashMap::new(),
-            composite: None,
+            composites: HashMap::new(),
         }
     }
 
     /// The device this renderer draws with.
     pub fn device(&self) -> &wgpu::Device {
         &self.device
+    }
+
+    /// Records the composite pass for `scene` into `encoder` and readies the post pass for a
+    /// target in `format`. `key` names the composite buffer (one per output window or preview)
+    /// so several targets can be in flight without re-allocating.
+    ///
+    /// Call [`GpuRenderer::paint`] with the same `key` inside a render pass on the target.
+    pub fn prepare(
+        &mut self,
+        key: &str,
+        scene: &Scene,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        let (width, height) = (width.max(1), height.max(1));
+        self.ensure_composite(key, width, height);
+        self.ensure_post_pipeline(format);
+        let draws: Vec<(wgpu::Buffer, wgpu::Buffer, u32, wgpu::BindGroup, BlendMode)> = scene
+            .draws
+            .iter()
+            .filter_map(|d| self.prepare_draw(d))
+            .collect();
+        let Some(composite) = self.composites.get(key) else {
+            return;
+        };
+        self.queue.write_buffer(
+            &composite.uniforms,
+            0,
+            bytemuck::bytes_of(&PostUniforms::from_post(&scene.post)),
+        );
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("lumen composite"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &composite.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        for (vb, ib, count, bind_group, mode) in &draws {
+            pass.set_pipeline(&self.surface_pipelines[mode]);
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_vertex_buffer(0, vb.slice(..));
+            pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..*count, 0, 0..1);
+        }
+    }
+
+    /// Draws the post-processed composite named `key` into `pass`, whose colour target must be
+    /// in `format`. Does nothing if `key` was never prepared.
+    pub fn paint(&self, key: &str, format: wgpu::TextureFormat, pass: &mut wgpu::RenderPass<'_>) {
+        let (Some(composite), Some(pipeline)) =
+            (self.composites.get(key), self.post_pipelines.get(&format))
+        else {
+            return;
+        };
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &composite.bind_group, &[]);
+        pass.draw(0..3, 0..1);
     }
 
     /// Renders `scene` into `target`, a view of a `width × height` texture in `format` that is
@@ -324,58 +390,13 @@ impl GpuRenderer {
         width: u32,
         height: u32,
     ) {
-        let (width, height) = (width.max(1), height.max(1));
-        self.ensure_composite(width, height);
-        self.ensure_post_pipeline(format);
-        let draws: Vec<(wgpu::Buffer, wgpu::Buffer, u32, wgpu::BindGroup, BlendMode)> = scene
-            .draws
-            .iter()
-            .filter_map(|d| self.prepare_draw(d))
-            .collect();
-        self.queue.write_buffer(
-            &self.post_uniforms,
-            0,
-            bytemuck::bytes_of(&PostUniforms::from_post(&scene.post)),
-        );
-
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("lumen frame"),
             });
-        let Some(composite) = self.composite.as_ref() else {
-            return;
-        };
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("lumen composite"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &composite.view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            for (vb, ib, count, bind_group, mode) in &draws {
-                pass.set_pipeline(&self.surface_pipelines[mode]);
-                pass.set_bind_group(0, bind_group, &[]);
-                pass.set_vertex_buffer(0, vb.slice(..));
-                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..*count, 0, 0..1);
-            }
-        }
+        let key = format!("view:{}", scene.output_id);
+        self.prepare(&key, scene, width, height, format, &mut encoder);
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("lumen post"),
@@ -393,9 +414,7 @@ impl GpuRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.post_pipelines[&format]);
-            pass.set_bind_group(0, &composite.bind_group, &[]);
-            pass.draw(0..3, 0..1);
+            self.paint(&key, format, &mut pass);
         }
         self.queue.submit(Some(encoder.finish()));
     }
@@ -490,8 +509,13 @@ impl GpuRenderer {
         self.textures.retain(|id, _| keep(id));
     }
 
-    fn ensure_composite(&mut self, width: u32, height: u32) {
-        if let Some(c) = &self.composite {
+    /// Drops composite buffers and mask textures whose keys are no longer in use.
+    pub fn retain_targets(&mut self, keep: impl Fn(&str) -> bool) {
+        self.composites.retain(|k, _| keep(k));
+    }
+
+    fn ensure_composite(&mut self, key: &str, width: u32, height: u32) {
+        if let Some(c) = self.composites.get(key) {
             if c.width == width && c.height == height {
                 return;
             }
@@ -511,13 +535,19 @@ impl GpuRenderer {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let uniforms = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("lumen post uniforms"),
+            size: size_of::<PostUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("lumen post"),
             layout: &self.post_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: self.post_uniforms.as_entire_binding(),
+                    resource: uniforms.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -529,12 +559,16 @@ impl GpuRenderer {
                 },
             ],
         });
-        self.composite = Some(Composite {
-            view,
-            bind_group,
-            width,
-            height,
-        });
+        self.composites.insert(
+            key.to_string(),
+            Composite {
+                view,
+                bind_group,
+                uniforms,
+                width,
+                height,
+            },
+        );
     }
 
     fn ensure_post_pipeline(&mut self, format: wgpu::TextureFormat) {

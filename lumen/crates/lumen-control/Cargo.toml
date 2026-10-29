@@ -1,6 +1,6 @@
 [package]
 name = "lumen-control"
-description = "placeholder"
+description = "Remote control for lumen: OSC server mapped onto parameter addresses"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,9 @@ publish.workspace = true
 
 [dependencies]
 lumen-core.workspace = true
+rosc.workspace = true
+thiserror.workspace = true
+log.workspace = true
 
 [lints]
 workspace = true

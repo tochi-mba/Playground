@@ -1,6 +1,6 @@
 [package]
 name = "lumen-app"
-description = "placeholder"
+description = "lumen: projection mapping editor, show player and headless CLI"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,8 +13,30 @@ publish.workspace = true
 name = "lumen"
 path = "src/main.rs"
 
+[features]
+default = []
+# Spout receiver (Windows). Forwarded to lumen-sources.
+spout = ["lumen-sources/spout"]
+
 [dependencies]
 lumen-core.workspace = true
+lumen-render.workspace = true
+lumen-sources.workspace = true
+lumen-control.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+eframe.workspace = true
+egui.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+image.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

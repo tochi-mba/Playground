@@ -143,6 +143,37 @@ impl Post {
     }
 }
 
+/// Remembers rasterised masks per surface so an unchanged mask costs nothing per frame.
+#[derive(Debug, Default)]
+pub struct MaskCache {
+    entries: std::collections::HashMap<String, (Vec<lumen_core::mask::Mask>, MaskRaster)>,
+}
+
+impl MaskCache {
+    /// Returns the raster for `masks`, rasterising only when they changed since last time.
+    pub fn get(&mut self, surface_id: &str, masks: &[lumen_core::mask::Mask]) -> MaskRaster {
+        if let Some((cached_masks, raster)) = self.entries.get(surface_id) {
+            if cached_masks.as_slice() == masks {
+                return raster.clone();
+            }
+        }
+        let raster = MaskRaster::from_masks(masks, MASK_RESOLUTION);
+        self.entries
+            .insert(surface_id.to_string(), (masks.to_vec(), raster.clone()));
+        raster
+    }
+
+    /// Number of surfaces remembered.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// True when nothing is cached.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// Everything needed to render one output.
 #[derive(Debug, Clone)]
 pub struct Scene {
@@ -167,6 +198,23 @@ impl Scene {
         sources: &SourceSet,
         mesh_density: u32,
     ) -> Result<Self, SceneError> {
+        Self::build_cached(
+            project,
+            output_id,
+            sources,
+            mesh_density,
+            &mut MaskCache::default(),
+        )
+    }
+
+    /// Like [`Scene::build`], reusing rasterised masks from `cache`.
+    pub fn build_cached(
+        project: &Project,
+        output_id: &str,
+        sources: &SourceSet,
+        mesh_density: u32,
+        cache: &mut MaskCache,
+    ) -> Result<Self, SceneError> {
         let output = project
             .output(output_id)
             .ok_or_else(|| SceneError::UnknownOutput(output_id.to_string()))?;
@@ -190,7 +238,7 @@ impl Scene {
                 opacity: s.opacity.clamp(0.0, 1.0),
                 blend_mode: s.blend_mode,
                 crop: s.crop,
-                mask: MaskRaster::from_masks(&s.masks, MASK_RESOLUTION),
+                mask: cache.get(&s.id, &s.masks),
             });
         }
         Ok(Self {
@@ -265,6 +313,29 @@ mod tests {
         p.outputs[0].width = 0;
         p.surfaces[0].warp = lumen_core::warp::WarpKind::default();
         assert_eq!(Scene::build(&p, "left", &s, 4).unwrap().width, 1);
+    }
+
+    #[test]
+    fn mask_cache_reuses_unchanged_masks() {
+        let mut cache = MaskCache::default();
+        assert!(cache.is_empty());
+        let hole = Mask::hole(vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(0.5, 0.0),
+            Vec2::new(0.5, 1.0),
+        ]);
+        let a = cache.get("s", std::slice::from_ref(&hole));
+        let b = cache.get("s", std::slice::from_ref(&hole));
+        assert_eq!(a, b);
+        assert_eq!(cache.len(), 1);
+        let c = cache.get("s", &[]);
+        assert!(c.is_full());
+        assert_eq!(cache.len(), 1, "same surface id replaces the entry");
+        let p = demo_project();
+        let s = demo_sources(&p);
+        let one = Scene::build(&p, "right", &s, 2).unwrap();
+        let two = Scene::build_cached(&p, "right", &s, 2, &mut cache).unwrap();
+        assert_eq!(one.draws[1].mask, two.draws[1].mask);
     }
 
     #[test]
