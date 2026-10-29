@@ -7,8 +7,8 @@ own CLAUDE.md; read that file before working inside it.
   folder. Its workflows are in `.github/workflows/` (android.yml, device-test.yml, release.yml)
   and its Claude skill in `.claude/skills/device-test/`, because GitHub and Claude Code only read
   those from the repo root.
-- `lumen/`: projection-mapping app in Rust (egui editor, wgpu renderer, headless CLI). Cargo
-  root is that folder. Its workflows are `lumen-ci.yml` and `lumen-release.yml` and its Claude
+- `lumen/`: projection-mapping app in Rust (egui editor, wgpu renderer, headless CLI, cues,
+  MIDI, OSC, phone remote). Cargo root is that folder. Its workflows are `lumen-ci.yml` and `lumen-release.yml` and its Claude
   skill is `.claude/skills/lumen-render/`.
 
 Workflows are path-filtered to their folder, so changes in one experiment do not trigger the

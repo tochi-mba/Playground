@@ -40,6 +40,7 @@ impl BlendCurve {
 
 /// One edge of an output's blend configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BlendEdge {
     /// Width of the fade as a fraction of the output's size along that axis. `0` disables.
     pub width: f64,
@@ -57,26 +58,46 @@ impl Default for BlendEdge {
 }
 
 /// Blend configuration for all four edges of an output.
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+///
+/// Every field has a serde default, so a project file can name only the edges it blends.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct EdgeBlend {
     /// Left edge.
+    #[serde(default)]
     pub left: BlendEdge,
     /// Right edge.
+    #[serde(default)]
     pub right: BlendEdge,
     /// Top edge.
+    #[serde(default)]
     pub top: BlendEdge,
     /// Bottom edge.
+    #[serde(default)]
     pub bottom: BlendEdge,
     /// Projector gamma used to encode the linear-light fade. Typical projectors are 2.2.
+    #[serde(default = "default_gamma")]
     pub gamma: f64,
+}
+
+fn default_gamma() -> f64 {
+    2.2
+}
+
+impl Default for EdgeBlend {
+    fn default() -> Self {
+        Self::none()
+    }
 }
 
 impl EdgeBlend {
     /// No blending, gamma 2.2.
     pub fn none() -> Self {
         Self {
-            gamma: 2.2,
-            ..Default::default()
+            left: BlendEdge::default(),
+            right: BlendEdge::default(),
+            top: BlendEdge::default(),
+            bottom: BlendEdge::default(),
+            gamma: default_gamma(),
         }
     }
 
@@ -281,6 +302,20 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
+    fn partial_blend_tables_parse_with_defaults() {
+        let b: EdgeBlend = toml::from_str("right = { width = 0.2 }").unwrap();
+        assert_eq!(b.right.width, 0.2);
+        assert_eq!(b.right.curve, BlendCurve::Smooth);
+        assert_eq!(b.left.width, 0.0);
+        assert_eq!(b.gamma, 2.2);
+        assert_eq!(EdgeBlend::default(), EdgeBlend::none());
+        let full: EdgeBlend =
+            toml::from_str("gamma = 1.8\ntop = { width = 0.1, curve = \"linear\" }").unwrap();
+        assert_eq!(full.gamma, 1.8);
+        assert_eq!(full.top.curve, BlendCurve::Linear);
+    }
+
+    #[test]
     fn suggestions_follow_the_overlap() {
         let a = PlacedRect {
             x: 0,
@@ -372,8 +407,12 @@ mod tests {
         assert_eq!(b.encoded_factor(0.5, 0.5), 1.0);
         assert!(b.lut(4, 2).iter().all(|&v| v == 1.0));
         assert_eq!(b.lut(0, 0).len(), 1);
-        assert_eq!(EdgeBlend::default().gamma, 0.0);
-        assert_eq!(EdgeBlend::default().sanitised().gamma, 2.2);
+        assert_eq!(EdgeBlend::default().gamma, 2.2);
+        let zero = EdgeBlend {
+            gamma: 0.0,
+            ..EdgeBlend::none()
+        };
+        assert_eq!(zero.sanitised().gamma, 2.2);
     }
 
     #[test]

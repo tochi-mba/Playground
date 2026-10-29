@@ -28,7 +28,9 @@ WGPU_BACKEND=vulkan LUMEN_REQUIRE_GPU=1 cargo test -p lumen-render --test golden
 - `software_matches_goldens` compares the oracle with `tests/golden/<case>.<output>.png`.
 - `gpu_matches_software_oracle` compares the wgpu renderer with the oracle
   (`Thresholds::GPU` in `crates/lumen-render/src/compare.rs`).
-- Cases live in `tests/golden/cases/*.lumen.toml`; the demo project is a case too.
+- Cases live in `tests/golden/cases/*.lumen.toml`; the demo project is a case too. Cases
+  cover warps, blend modes, post, blackout, the animated generators at a fixed time and the
+  calibration overlays (`overlays.lumen.toml`, one output per overlay kind).
 
 On failure the test writes `<golden>.actual.png` and `<golden>.diff.png` (white = different)
 next to the golden. Read both with the Read tool before deciding whether the change is
@@ -55,5 +57,7 @@ of the same scene, so a mismatch is a bug in one of them.
 
 ## Full local gate
 
-`cargo xtask ci` runs fmt, clippy, docs, cargo-deny, every test and the coverage floors, the
-same as `.github/workflows/lumen-ci.yml`.
+`cargo xtask ci` runs the file-length check (no source file over 1000 lines), fmt, clippy,
+docs, cargo-deny, every test and the coverage floors, the same as
+`.github/workflows/lumen-ci.yml`. Video tests need `ffmpeg` on the path (`/usr/bin/ffmpeg`
+in this container; `LUMEN_REQUIRE_FFMPEG=1` makes a missing binary a failure, as CI does).

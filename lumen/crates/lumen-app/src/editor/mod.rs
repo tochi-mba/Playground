@@ -73,6 +73,8 @@ pub fn run(launch: &Launch) -> anyhow::Result<ExitCode> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("lumen")
+            .with_app_id("lumen")
+            .with_icon(crate::theme::icon_data(64))
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([800.0, 500.0]),
         renderer: eframe::Renderer::Wgpu,
@@ -83,6 +85,7 @@ pub fn run(launch: &Launch) -> anyhow::Result<ExitCode> {
         "lumen",
         options,
         Box::new(move |cc| {
+            crate::theme::apply(&cc.egui_ctx);
             let Some(render_state) = cc.wgpu_render_state.as_ref() else {
                 return Err("lumen needs the wgpu backend".into());
             };
@@ -589,7 +592,7 @@ impl LumenApp {
                 &mut actions,
             );
             egui::CentralPanel::default()
-                .frame(egui::Frame::NONE.fill(egui::Color32::from_gray(18)))
+                .frame(egui::Frame::NONE.fill(crate::theme::CANVAS_BG))
                 .show(ui, |ui| {
                     if self.canvas.stage {
                         stage::show(

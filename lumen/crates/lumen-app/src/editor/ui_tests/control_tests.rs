@@ -102,6 +102,7 @@ fn cue_panel_stores_fires_updates_and_reorders() {
 
 #[test]
 fn control_section_learns_midi_and_runs_feedback_and_remote() {
+    let _settings = settings_guard();
     let mut h = harness(Editor::new(demo_project(), None));
     assert!(h.query_by_label("Control").is_some());
     assert!(h.query_by_label("MIDI off").is_some());
@@ -212,6 +213,7 @@ fn control_section_learns_midi_and_runs_feedback_and_remote() {
 
 #[test]
 fn settings_open_controllers_and_show_launch_takes_a_remote_port() {
+    let _settings = settings_guard();
     let dir = config_dir();
     let free = {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

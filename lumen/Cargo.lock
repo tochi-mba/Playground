@@ -2200,7 +2200,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "lumen-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2227,7 +2227,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-control"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "log",
  "lumen-core",
@@ -2242,7 +2242,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proptest",
  "serde",
@@ -2253,7 +2253,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-render"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "image",
@@ -2269,11 +2269,12 @@ dependencies = [
 
 [[package]]
 name = "lumen-sources"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "image",
  "log",
  "lumen-core",
+ "spout2-rs",
  "tempfile",
  "thiserror 2.0.21",
 ]
@@ -3701,6 +3702,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "spout2-rs"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e3d5a4fafc4e72ae9a57e78d8a4b84e7580a7671b9729c26894fe2434c73bb4"
+dependencies = [
+ "spout2-sys",
+]
+
+[[package]]
+name = "spout2-sys"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "670dd837cb0132982b6113a6c553e99453b0f8ba3014bd697bd7236e1a9d88aa"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5113,7 +5132,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
 ]

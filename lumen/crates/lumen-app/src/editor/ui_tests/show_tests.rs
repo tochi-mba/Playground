@@ -80,6 +80,7 @@ fn show_mode_screen_and_shortcuts() {
 
 #[test]
 fn file_flows_through_dialogs_and_unsaved_prompt() {
+    let _settings = settings_guard();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ui.lumen.toml");
     let mut h = harness(Editor::new(demo_project(), None));
@@ -165,6 +166,7 @@ fn file_flows_through_dialogs_and_unsaved_prompt() {
 
 #[test]
 fn welcome_screen_creates_outputs_and_remembers_recent() {
+    let _settings = settings_guard();
     let dir = tempfile::tempdir().unwrap();
     let recent = dir.path().join("old.lumen.toml");
     demo_project().save(&recent).unwrap();
@@ -249,6 +251,7 @@ fn dropped_files_become_sources_and_hover_shows_an_overlay() {
 
 #[test]
 fn view_menu_toggles_and_output_windows_carry_handles() {
+    let _settings = settings_guard();
     let mut h = harness(Editor::new(demo_project(), None));
     menu(&mut h, "View", "Grid  (G)");
     assert!(h.state().canvas.show_grid);

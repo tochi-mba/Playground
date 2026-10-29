@@ -6,6 +6,8 @@ All notable changes to lumen are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-29
+
 ### Added
 
 - Welcome screen that creates an output per detected display, recent files, native file
@@ -32,7 +34,18 @@ All notable changes to lumen are documented here. The format follows
   outputs.
 - Calibration overlays per output (grid, crosshair, colour bars, grey steps, blend check),
   never shown in show mode, and a gamma match tool (`[` / `]` nudge the blend gamma).
+- Native Spout receiver on Windows (`--features spout`, vendored Spout2 SDK through
+  `spout2-rs`, DirectX 11 CPU path, no `unsafe` in lumen); a stub elsewhere.
+- Dark theme tuned for a booth, app and window icon, `docs/manual.md`.
 - `cargo xtask file-lengths` (also in `cargo xtask ci`): no source file over 1000 lines.
+
+### Changed
+
+- Project files can name only the blend edges and playback fields they set; the rest take
+  defaults (gamma 2.2, smooth curve, speed 1).
+- Source files over 1000 lines were split into modules (`editor/state/`, `editor/panels/`,
+  `project/`, `editor/ui_tests/`).
+- Linux CI installs `libasound2-dev` (MIDI) and `ffmpeg`, and requires the video tests.
 
 ## [0.1.0] - 2026-10-29
 
@@ -54,5 +67,6 @@ All notable changes to lumen are documented here. The format follows
 - CPU reference renderer, wgpu renderer, golden-image tests and GPU-versus-oracle tests.
 - CI on Linux and Windows with clippy, cargo-deny, coverage floors and a release workflow.
 
-[Unreleased]: https://github.com/tochi-mba/playground/compare/lumen-v0.1.0...HEAD
+[Unreleased]: https://github.com/tochi-mba/playground/compare/lumen-v0.2.0...HEAD
+[0.2.0]: https://github.com/tochi-mba/playground/compare/lumen-v0.1.0...lumen-v0.2.0
 [0.1.0]: https://github.com/tochi-mba/playground/releases/tag/lumen-v0.1.0

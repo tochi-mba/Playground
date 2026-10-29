@@ -464,6 +464,36 @@ fn placed_rects_and_blend_suggestions() {
 }
 
 #[test]
+fn hand_written_files_need_only_the_fields_they_set() {
+    let text = r#"
+schema_version = 1
+name = "minimal"
+[[sources]]
+id = "loop"
+kind = "video"
+path = "loop.mp4"
+playback = { looping = true }
+[[outputs]]
+id = "o"
+width = 1280
+height = 720
+[outputs.blend]
+right = { width = 0.2 }
+[[surfaces]]
+id = "s"
+output = "o"
+source = "loop"
+"#;
+    let p = Project::from_toml(text).unwrap();
+    let pb = p.sources[0].kind.playback().unwrap();
+    assert!(pb.looping && !pb.paused);
+    assert_eq!(pb.speed, 1.0);
+    assert_eq!(p.outputs[0].blend.right.width, 0.2);
+    assert_eq!(p.outputs[0].blend.gamma, 2.2);
+    assert!(p.validate().iter().all(|i| !i.error), "{:?}", p.validate());
+}
+
+#[test]
 fn fresh_ids_and_duplicates() {
     let mut p = demo_project();
     assert_eq!(p.fresh_id("new"), "new");

@@ -40,6 +40,14 @@ fn monitors() -> Vec<MonitorInfo> {
     ]
 }
 
+/// Tests that write `settings.toml` share one file (the config dir is process-wide), so each
+/// of them holds this lock for its whole body.
+fn settings_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn config_dir() -> PathBuf {
     static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
     let dir = DIR.get_or_init(|| tempfile::tempdir().unwrap());
@@ -65,6 +73,7 @@ fn harness(editor: Editor) -> Harness<'static, LumenApp> {
     let mut h = Harness::builder()
         .with_size(egui::Vec2::new(1400.0, 900.0))
         .build_ui_state(|ui, app: &mut LumenApp| app.frame(ui), app(editor));
+    crate::theme::apply(&h.ctx);
     h.run_steps(3);
     h
 }
@@ -499,6 +508,7 @@ fn show_inspector_and_media_dialog() {
 
 #[test]
 fn canvas_drag_moves_a_corner_and_keys_nudge_it() {
+    let _settings = settings_guard();
     let mut h = harness(Editor::new(demo_project(), None));
     click(&mut h, "wall-left");
     h.state_mut().canvas.handles.snap = false;
@@ -621,6 +631,7 @@ fn canvas_drag_moves_a_corner_and_keys_nudge_it() {
 
 #[test]
 fn snapping_locking_and_click_to_select_on_the_canvas() {
+    let _settings = settings_guard();
     let mut h = harness(Editor::new(demo_project(), None));
     click(&mut h, "wall-right");
     let rect = h.state().canvas.last_rect.unwrap();

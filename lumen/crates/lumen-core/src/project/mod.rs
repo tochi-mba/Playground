@@ -110,8 +110,9 @@ fn default_white() -> [f32; 4] {
     [1.0, 1.0, 1.0, 1.0]
 }
 
-/// Transport state of a playable source.
+/// Transport state of a playable source. Every field is optional in a project file.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Playback {
     /// Start again at the end.
     pub looping: bool,

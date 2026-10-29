@@ -9,6 +9,7 @@ mod autosave;
 mod cli;
 mod editor;
 mod settings;
+mod theme;
 mod watchdog;
 
 use clap::{Parser, Subcommand};

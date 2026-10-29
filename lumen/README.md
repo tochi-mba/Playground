@@ -1,89 +1,94 @@
 # lumen
 
-Projection mapping that you can trust on show day.
+Projection mapping that you can trust on show day, and that a first-timer can run in two
+minutes.
 
-lumen maps video sources onto physical surfaces through one or many projectors. It is a
-native Rust application (egui editor, wgpu renderer) with a few deliberate differences from
-the usual tools:
+lumen maps video, images, loops and live inputs onto physical surfaces through one or many
+projectors. It is a native Rust application (egui editor, wgpu renderer) with a few deliberate
+differences from the usual tools:
 
+- **Easiest calibration.** Plug in the projectors, open lumen, click *Create outputs*: every
+  display gets a full-size output with a grid. Drag corners on the canvas or directly on the
+  wall, with zoom, snapping, numeric readouts and an *Identify* flash so four projectors never
+  get mixed up. The stage view shows the whole wall to scale; *Suggest blends* sets the
+  overlap fades for you; calibration overlays and a gamma-match tool hide the seams.
 - **Provably correct geometry.** Corner-pin warps are true homographies with
-  perspective-correct texture sampling; curved surfaces use bicubic Bezier meshes; projector
-  overlaps are blended in linear light with gamma-correct falloffs. A CPU reference renderer is
-  the specification, golden images are generated from it, and the GPU renderer is compared
-  against it on every push.
-- **Show-day reliability.** A locked show mode (double-Escape to leave), autosave with crash
+  perspective-correct sampling; curved surfaces use bicubic Bezier meshes; overlaps blend in
+  linear light with gamma-correct falloffs. A CPU reference renderer is the specification,
+  golden images come from it, and the GPU renderer is compared against it on every push.
+- **A real show, not a demo.** Video through `ffmpeg`, image sequences and GIFs, six animated
+  generators, Spout senders on Windows; cues with crossfades; GO from the keyboard, OSC, a
+  MIDI controller (learn any fader or button) or a phone on the Wi-Fi; OSC feedback so your
+  TouchOSC layout follows the app.
+- **Show-day reliability.** Locked show mode (double-Escape to leave), autosave with crash
   recovery, atomic project writes, a render-loop watchdog that can relaunch the show, and a
   startup self-check that opens every enabled output where the project says it belongs.
 - **Plain-text projects.** `.lumen.toml` files are small, diffable and versioned with
-  migrations, so a show lives happily in git.
-- **Scriptable and testable.** `lumen render` draws any output to PNG without a window;
-  OSC drives every live parameter; the whole app, UI included, is covered by headless tests.
-- **Permissive and light.** MIT OR Apache-2.0, one executable, no runtime dependencies, no
-  watermark.
+  migrations, so a show lives happily in git. Cues and MIDI maps travel with it.
+- **Scriptable, testable, free.** `lumen render` draws any output to PNG without a window; the
+  whole app, UI included, is covered by headless tests. MIT OR Apache-2.0, one executable, no
+  watermark, no subscription.
 
-| Two-projector demo, left output (blended right edge) | Right output (overlap, screen-mode logo with a feathered mask) | Bezier mesh on a curve |
+| Left output of the demo, blended right edge | Right output: overlap, screen-mode logo, feathered mask | Bezier mesh on a curve |
 |---|---|---|
 | ![left](docs/images/left.png) | ![right](docs/images/right.png) | ![bezier](docs/images/bezier.png) |
 
-## Install
+| Six generators at one instant | Grid overlay on a checker (never shown in show mode) |
+|---|---|
+| ![generators](docs/images/generators.png) | ![overlay](docs/images/overlay-grid.png) |
 
-Download `lumen-<version>-windows-x64.zip` from the repository's releases (tags `lumen-v*`),
-or build from source:
+## Two-minute start
 
-```bash
-cd lumen
-cargo build --release -p lumen-app            # any platform
-cargo build --release -p lumen-app --features spout   # Windows, Spout receiver
-```
+1. Download `lumen-<version>-windows-x64.zip` from the releases (tags `lumen-v*`), unzip,
+   run `lumen.exe`. Or build: `cd lumen && cargo build --release -p lumen-app --features spout`.
+2. The welcome screen lists your displays. Click **Create N output(s) with a test grid**: each
+   secondary display gets a borderless output window showing an alignment grid.
+3. Press **I** to flash each output's name on its projector. Drag the four corner handles on
+   the canvas (or on the wall itself) until the grid sits on the surface. Scroll to zoom,
+   **G** for a grid, **S** for snapping, arrows to nudge.
+4. **Add media…** (or drop files on the window) and pick the source in the surface inspector.
+5. Set up a look, press **Store cue**, change something, store another. **Space** fades
+   between them. **F10** locks the show. Ctrl+S saves everything to one TOML file.
 
-Requires a GPU with Vulkan or DirectX 12 support (wgpu picks DX12 on Windows).
+The full guide is [docs/manual.md](docs/manual.md).
 
 ## Use
 
 ```text
-lumen                              open the editor with the demo project
+lumen                              open the editor (welcome screen, or the demo)
 lumen show.lumen.toml              open a project
 lumen show show.lumen.toml         straight into locked show mode, outputs open
+lumen show show.lumen.toml --remote-port 8080 --osc-port 9000 --restart-on-stall 5
 lumen render show.lumen.toml --out frames/     PNG per output, headless
 lumen validate show.lumen.toml     check references and geometry (exit 1 on errors)
 lumen migrate old.lumen.toml       rewrite in the current schema
 lumen new my-show.lumen.toml       write the two-projector demo
 ```
 
-### Editing
+### Objects
 
 - **Outputs** are projectors: size, enabled-in-show, colour (brightness, contrast, gamma),
-  four-edge blend (width, curve, blend gamma) and placement. An unplaced output opens as a
-  draggable preview window; drag it onto the projector and press *Use current window
-  position*, or pick *Fill monitor …*. Placed outputs open borderless, always on top, at full
-  size.
-- **Surfaces** place a source on an output: corner-pin (drag the four handles; Shift-drag moves
-  all; arrow keys nudge the active handle, Shift for ×10) or a Bezier mesh (convert from a
-  quad, then drag control points). Opacity, z-order, blend mode, source crop and feathered
-  polygon masks (holes or windows) are in the inspector.
-- **Sources**: built-in grid, bars, checker and ramp patterns, solid colours, PNG/JPEG images,
-  and Spout senders (Windows builds with the `spout` feature).
-- **Shortcuts**: Ctrl+Z / Ctrl+Y undo and redo (a whole drag is one step), Ctrl+S save, Delete
-  removes the selection, F10 toggles show mode, Escape twice leaves show mode.
+  four-edge blend (width, curve, blend gamma), placement on a monitor, and a calibration
+  overlay (grid, crosshair, colour bars, grey steps, blend check).
+- **Surfaces** place a source on an output: corner-pin or Bezier mesh, opacity, z-order,
+  blend mode, crop (drag it on the preview) and feathered polygon masks. Lock, duplicate,
+  rename, reorder, align (flip, rotate, fit, centre, match aspect).
+- **Sources**: test patterns, solid colours, PNG/JPEG, video (any format `ffmpeg` reads),
+  numbered image sequences, GIFs, generators (plasma, noise, colour cycle, strobe, radar,
+  grid pulse) and Spout senders. Video, sequences and generators share a transport (play,
+  loop, speed, restart).
+- **Cues** snapshot every live parameter with a fade time. GO fades numbers and switches
+  booleans half way.
 
-### Show mode
+### Control
 
-Editing is locked, every enabled output window opens, OSC stays live, autosave pauses, and the
-editor window shows status only. `lumen show --restart-on-stall 5 show.lumen.toml` relaunches
-the process if the render loop stops beating for five seconds.
-
-### OSC
-
-Default port 9000 (`--osc-port 0` disables). One message per parameter, first argument is the
-value; a message with no arguments means `true`.
-
-```text
-/show/blackout            bool      /show/master               0..1
-/surface/<id>/opacity     0..1      /surface/<id>/visible      bool
-/surface/<id>/z           int       /surface/<id>/corner/<0-3>/x|y  0..1 (quads)
-/output/<id>/enabled      bool      /output/<id>/brightness|contrast|gamma
-/output/<id>/blend/<left|right|top|bottom>/width       /output/<id>/blend/gamma
-```
+| Way in | What it does |
+|---|---|
+| Keyboard | `Space` GO, `B` blackout, `I` identify, `T` stage view, `[`/`]` blend gamma, `?` the full list |
+| OSC (`--osc-port`, default 9000) | `/show/blackout`, `/show/master`, `/surface/<id>/opacity`, `/output/<id>/blend/<edge>/width`, `/source/<id>/play`, `/cue/go`, `/cue/<id>/go`, `/cue/stop` … every live parameter |
+| OSC feedback | Show inspector → *Feedback host:port*: every change is echoed back |
+| MIDI | Show inspector → open a port, type an address (or press *MIDI learn opacity* on a surface), move a control. Fader, button and switch modes; saved in the project |
+| Phone | *Start remote* (or `--remote-port 8080`), scan the QR code: blackout, master, levels, opacities and the cue list from any browser |
 
 ### Project file
 
@@ -92,14 +97,16 @@ schema_version = 1
 name = "Two projector demo"
 
 [[sources]]
-id = "grid"
-kind = "test_pattern"
-pattern = "grid"
+id = "loop"
+kind = "video"
+path = "media/loop.mp4"
+playback = { looping = true, speed = 1.0 }
 
 [[outputs]]
 id = "left"
 width = 1920
 height = 1080
+placement = { monitor = '\\.\DISPLAY2', x = 1920, y = 0 }
 [outputs.blend]
 right = { width = 0.2, curve = "smooth" }
 gamma = 2.2
@@ -107,9 +114,15 @@ gamma = 2.2
 [[surfaces]]
 id = "wall-left"
 output = "left"
-source = "grid"
-crop = { x = 0.0, y = 0.0, w = 0.6, h = 1.0 }
+source = "loop"
 warp = { kind = "quad", corners = [{ x = 0.05, y = 0.08 }, { x = 0.98, y = 0.04 }, { x = 0.96, y = 0.95 }, { x = 0.03, y = 0.9 }] }
+
+[[cues]]
+id = "opening"
+fade_seconds = 3.0
+[cues.values]
+"/show/master" = 1.0
+"/surface/wall-left/opacity" = 1.0
 ```
 
 See `examples/two-projector-demo.lumen.toml` for the full demo.
@@ -118,23 +131,27 @@ See `examples/two-projector-demo.lumen.toml` for the full demo.
 
 ```bash
 cd lumen
-cargo xtask ci          # fmt, clippy -D warnings, docs, cargo-deny, tests, coverage floors
+cargo xtask ci          # file lengths, fmt, clippy -D warnings, docs, cargo-deny, tests, coverage floors
 ```
 
-Crates: `lumen-core` (geometry, blending, project format, undo), `lumen-sources`,
-`lumen-render` (software oracle + wgpu), `lumen-control` (OSC), `lumen-app` (editor, show
-player, CLI). `CLAUDE.md` describes the layout and conventions in more detail;
+Crates: `lumen-core` (geometry, blending, project format, cues, MIDI map, undo),
+`lumen-sources` (patterns, images, video, sequences, generators, Spout), `lumen-render`
+(software oracle + wgpu), `lumen-control` (OSC in and out, MIDI, the phone remote),
+`lumen-app` (editor, show player, CLI). `CLAUDE.md` describes the layout and conventions;
 `CONTRIBUTING.md` the workflow.
 
 Headless GPU tests need a Vulkan adapter; on Linux without a GPU install Mesa's lavapipe
-(`mesa-vulkan-drivers`) and run with `WGPU_BACKEND=vulkan`.
+(`mesa-vulkan-drivers`) and run with `WGPU_BACKEND=vulkan`. Video tests need `ffmpeg`; MIDI
+needs `libasound2-dev` to build on Linux.
+
+Spout is compiled on Windows (MSVC, x64) from the vendored Spout2 SDK and needs a GPU at run
+time; CI builds it, a projector proves it.
 
 ## Roadmap
 
-Video sources (FFmpeg or GStreamer behind a feature), native Spout receiver and sender, NDI,
-MIDI learn, camera-assisted calibration, 3-D model mapping, DMX/Art-Net, output windows on
-macOS and Linux with per-monitor DPI, LED pixel mapping.
+NDI, Spout sending, camera-assisted calibration, 3-D model mapping, DMX/Art-Net, LED pixel
+mapping, output windows on macOS and Linux with per-monitor DPI.
 
 ## Licence
 
-MIT OR Apache-2.0, at your option.
+MIT OR Apache-2.0, at your option. Spout2 (vendored by `spout2-rs`) is BSD-2-Clause.

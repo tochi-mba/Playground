@@ -50,7 +50,7 @@ pub fn show(
     let avail = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(avail, Sense::click_and_drag());
     let painter = ui.painter_at(avail);
-    painter.rect_filled(avail, 0.0, Color32::from_gray(18));
+    painter.rect_filled(avail, 0.0, crate::theme::CANVAS_BG);
 
     let placed: Vec<(String, Rect)> = editor
         .project
