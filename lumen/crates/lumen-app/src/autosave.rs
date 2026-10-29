@@ -94,7 +94,7 @@ mod tests {
         assert!(!a.due(true, start + Duration::from_secs(9)));
         assert!(a.due(true, start + Duration::from_secs(11)));
         assert!(
-            !a.due(false, start + Duration::from_secs(60)),
+            !a.due(false, start + Duration::from_mins(1)),
             "clean projects never autosave"
         );
         a.mark_saved(start + Duration::from_secs(11));

@@ -893,11 +893,11 @@ mod tests {
 
         // Autosave only when dirty and due.
         let now = Instant::now();
-        assert!(!e.maybe_autosave(now + Duration::from_secs(60)), "clean");
+        assert!(!e.maybe_autosave(now + Duration::from_mins(1)), "clean");
         e.set_param("/show/master", ParamValue::Number(0.25));
         assert!(e.title().starts_with('*'));
         assert!(!e.maybe_autosave(now), "not due");
-        assert!(e.maybe_autosave(now + Duration::from_secs(60)));
+        assert!(e.maybe_autosave(now + Duration::from_mins(1)));
         let auto = autosave::autosave_path(&path);
         assert!(auto.exists());
         assert_eq!(Project::load(&auto).unwrap().master, 0.25);
@@ -906,20 +906,20 @@ mod tests {
         e.enter_show_mode();
         e.dirty = true;
         assert!(
-            !e.maybe_autosave(now + Duration::from_secs(600)),
+            !e.maybe_autosave(now + Duration::from_mins(10)),
             "never in show mode"
         );
         let mut untitled = editor();
         untitled.dirty = true;
         assert!(
-            !untitled.maybe_autosave(now + Duration::from_secs(600)),
+            !untitled.maybe_autosave(now + Duration::from_mins(10)),
             "no path"
         );
         let mut bad = editor();
         bad.path = Some(dir.path().join("missing-dir").join("x").join("y.toml"));
         std::fs::write(dir.path().join("missing-dir"), b"file").unwrap();
         bad.dirty = true;
-        assert!(!bad.maybe_autosave(now + Duration::from_secs(600)));
+        assert!(!bad.maybe_autosave(now + Duration::from_mins(10)));
         assert!(bad.status.contains("autosave failed"));
     }
 
@@ -961,7 +961,7 @@ mod tests {
         // Hand-encode a float OSC message so the test does not need the rosc crate.
         fn pad(mut s: Vec<u8>) -> Vec<u8> {
             s.push(0);
-            while s.len() % 4 != 0 {
+            while !s.len().is_multiple_of(4) {
                 s.push(0);
             }
             s
