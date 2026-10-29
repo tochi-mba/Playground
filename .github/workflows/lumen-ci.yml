@@ -81,16 +81,16 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: nextest
-      - name: Install a software Vulkan driver (lavapipe)
+      - name: Install a software Vulkan driver (lavapipe) and require the GPU path
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libegl1
+        # Linux must prove the GPU path. Windows runners have no GPU driver, so there the GPU
+        # tests skip themselves (wgpu may still find a DX12 WARP adapter, in which case they run).
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libegl1
+          echo "LUMEN_REQUIRE_GPU=1" >> "$GITHUB_ENV"
+          echo "WGPU_BACKEND=vulkan" >> "$GITHUB_ENV"
       - name: Unit, integration and golden tests
         run: cargo nextest run --workspace --all-features --no-fail-fast
-        env:
-          # Linux must prove the GPU path; Windows runners have no GPU, so the GPU tests skip
-          # themselves there and the software oracle still runs.
-          LUMEN_REQUIRE_GPU: ${{ runner.os == 'Linux' && '1' || '' }}
-          WGPU_BACKEND: ${{ runner.os == 'Linux' && 'vulkan' || '' }}
       - name: Doc tests
         run: cargo test --workspace --all-features --doc
       - name: Upload golden diffs

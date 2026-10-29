@@ -16,6 +16,11 @@ use lumen_render::software;
 use lumen_sources::SourceSet;
 use std::path::{Path, PathBuf};
 
+/// `LUMEN_REQUIRE_GPU` turns a missing adapter into a failure; an empty value counts as unset.
+fn require_gpu() -> bool {
+    std::env::var("LUMEN_REQUIRE_GPU").is_ok_and(|v| !v.trim().is_empty())
+}
+
 const GOLDEN_W: u32 = 256;
 const GOLDEN_H: u32 = 144;
 
@@ -60,10 +65,7 @@ fn gpu() -> Option<GpuRenderer> {
     match GpuContext::headless() {
         Ok(ctx) => Some(GpuRenderer::new(ctx.device, ctx.queue)),
         Err(e) => {
-            assert!(
-                std::env::var_os("LUMEN_REQUIRE_GPU").is_none(),
-                "LUMEN_REQUIRE_GPU is set but: {e}"
-            );
+            assert!(!require_gpu(), "LUMEN_REQUIRE_GPU is set but: {e}");
             eprintln!("skipping GPU comparison: {e}");
             None
         }

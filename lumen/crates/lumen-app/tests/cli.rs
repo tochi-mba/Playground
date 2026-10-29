@@ -6,6 +6,11 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::Path;
 
+/// `LUMEN_REQUIRE_GPU` demands the GPU path; an empty value counts as unset.
+fn require_gpu() -> bool {
+    std::env::var("LUMEN_REQUIRE_GPU").is_ok_and(|v| !v.trim().is_empty())
+}
+
 fn lumen() -> Command {
     let mut c = Command::cargo_bin("lumen").unwrap();
     c.env("RUST_LOG", "warn");
@@ -183,7 +188,7 @@ fn render_uses_the_gpu_when_one_is_available() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
-    if std::env::var_os("LUMEN_REQUIRE_GPU").is_some() {
+    if require_gpu() {
         assert!(stdout.contains("(64x36, gpu)"), "{stdout}");
     }
     assert!(out.exists());
