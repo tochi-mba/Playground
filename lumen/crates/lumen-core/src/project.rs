@@ -157,7 +157,7 @@ fn default_true() -> bool {
 }
 
 /// How a surface composites over what is already on its output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlendMode {
     /// Source over.

@@ -1,0 +1,59 @@
+schema_version = 1
+name = "Every blend mode over a ramp"
+
+[[sources]]
+id = "ramp"
+kind = "test_pattern"
+pattern = "ramp"
+
+[[sources]]
+id = "bars"
+kind = "test_pattern"
+pattern = "bars"
+
+[[outputs]]
+id = "main"
+width = 1280
+height = 720
+
+[[surfaces]]
+id = "base"
+output = "main"
+source = "ramp"
+z = 0
+
+[[surfaces]]
+id = "normal"
+output = "main"
+source = "bars"
+z = 1
+opacity = 0.6
+blend_mode = "normal"
+warp = { kind = "quad", corners = [{ x = 0.02, y = 0.05 }, { x = 0.48, y = 0.05 }, { x = 0.48, y = 0.48 }, { x = 0.02, y = 0.48 }] }
+
+[[surfaces]]
+id = "add"
+output = "main"
+source = "bars"
+z = 1
+opacity = 0.6
+blend_mode = "add"
+warp = { kind = "quad", corners = [{ x = 0.52, y = 0.05 }, { x = 0.98, y = 0.05 }, { x = 0.98, y = 0.48 }, { x = 0.52, y = 0.48 }] }
+
+[[surfaces]]
+id = "multiply"
+output = "main"
+source = "bars"
+z = 1
+opacity = 0.6
+blend_mode = "multiply"
+warp = { kind = "quad", corners = [{ x = 0.02, y = 0.52 }, { x = 0.48, y = 0.52 }, { x = 0.48, y = 0.95 }, { x = 0.02, y = 0.95 }] }
+
+[[surfaces]]
+id = "screen"
+output = "main"
+source = "bars"
+z = 1
+opacity = 0.6
+blend_mode = "screen"
+warp = { kind = "quad", corners = [{ x = 0.52, y = 0.52 }, { x = 0.98, y = 0.52 }, { x = 0.98, y = 0.95 }, { x = 0.52, y = 0.95 }] }
