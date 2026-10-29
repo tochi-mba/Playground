@@ -68,6 +68,144 @@ pub enum SourceKind {
         #[serde(default)]
         sender: String,
     },
+    /// A video file decoded through `ffmpeg`.
+    Video {
+        /// Path, relative to the project file when not absolute.
+        path: String,
+        /// Transport settings.
+        #[serde(default)]
+        playback: Playback,
+    },
+    /// A folder of numbered image frames, or an animated GIF.
+    Sequence {
+        /// Folder or `.gif` path, relative to the project file when not absolute.
+        path: String,
+        /// Frames per second for folders (GIFs carry their own timing).
+        #[serde(default = "default_fps")]
+        fps: f64,
+        /// Transport settings.
+        #[serde(default)]
+        playback: Playback,
+    },
+    /// A procedural animated pattern.
+    Generator {
+        /// Which pattern.
+        pattern: GeneratorKind,
+        /// Animation speed multiplier.
+        #[serde(default = "default_one_f32")]
+        speed: f32,
+        /// Tint colour, RGBA in `[0,1]`.
+        #[serde(default = "default_white")]
+        color: [f32; 4],
+    },
+}
+
+fn default_fps() -> f64 {
+    25.0
+}
+
+fn default_one_f32() -> f32 {
+    1.0
+}
+
+fn default_white() -> [f32; 4] {
+    [1.0, 1.0, 1.0, 1.0]
+}
+
+/// Transport state of a playable source.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Playback {
+    /// Start again at the end.
+    pub looping: bool,
+    /// Rate multiplier, `1` is normal speed.
+    pub speed: f64,
+    /// Frozen on the current frame.
+    pub paused: bool,
+    /// Bumped by a restart request; never saved.
+    #[serde(skip)]
+    pub restart_token: u32,
+}
+
+impl Default for Playback {
+    fn default() -> Self {
+        Self {
+            looping: true,
+            speed: 1.0,
+            paused: false,
+            restart_token: 0,
+        }
+    }
+}
+
+/// Procedural patterns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeneratorKind {
+    /// Classic sine plasma.
+    Plasma,
+    /// Smooth value noise.
+    Noise,
+    /// Hue sweep across the frame.
+    ColorCycle,
+    /// Full-frame flashes.
+    Strobe,
+    /// Rotating radar sweep.
+    Radar,
+    /// Grid whose lines pulse.
+    GridPulse,
+}
+
+impl GeneratorKind {
+    /// Every kind, for menus.
+    pub const ALL: [Self; 6] = [
+        Self::Plasma,
+        Self::Noise,
+        Self::ColorCycle,
+        Self::Strobe,
+        Self::Radar,
+        Self::GridPulse,
+    ];
+}
+
+impl SourceKind {
+    /// Transport settings, for the kinds that play.
+    pub fn playback(&self) -> Option<&Playback> {
+        match self {
+            Self::Video { playback, .. } | Self::Sequence { playback, .. } => Some(playback),
+            _ => None,
+        }
+    }
+
+    /// Mutable transport settings.
+    pub fn playback_mut(&mut self) -> Option<&mut Playback> {
+        match self {
+            Self::Video { playback, .. } | Self::Sequence { playback, .. } => Some(playback),
+            _ => None,
+        }
+    }
+
+    /// The file or folder path, for file-backed kinds.
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            Self::Image { path } | Self::Video { path, .. } | Self::Sequence { path, .. } => {
+                Some(path)
+            }
+            _ => None,
+        }
+    }
+
+    /// Short human label for the kind.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::TestPattern { .. } => "pattern",
+            Self::Solid { .. } => "solid",
+            Self::Image { .. } => "image",
+            Self::Spout { .. } => "spout",
+            Self::Video { .. } => "video",
+            Self::Sequence { .. } => "sequence",
+            Self::Generator { .. } => "generator",
+        }
+    }
 }
 
 /// Built-in test patterns.
@@ -615,6 +753,19 @@ impl Project {
                     _ => None,
                 }
             }
+            ["source", id, rest @ ..] => {
+                let s = self.source(id)?;
+                match (rest, &s.kind) {
+                    (["speed"], SourceKind::Generator { speed, .. }) => {
+                        Some(Number(f64::from(*speed)))
+                    }
+                    (["play"], k) => k.playback().map(|p| Bool(!p.paused)),
+                    (["loop"], k) => k.playback().map(|p| Bool(p.looping)),
+                    (["speed"], k) => k.playback().map(|p| Number(p.speed)),
+                    (["restart"], k) => k.playback().map(|_| Bool(false)),
+                    _ => None,
+                }
+            }
             ["output", id, rest @ ..] => {
                 let o = self.output(id)?;
                 match rest {
@@ -675,6 +826,25 @@ impl Project {
                             _ => return Err(unknown()),
                         }
                     }
+                    _ => return Err(unknown()),
+                }
+            }
+            ["source", id, rest @ ..] => {
+                let s = self
+                    .sources
+                    .iter_mut()
+                    .find(|s| s.id == *id)
+                    .ok_or_else(unknown)?;
+                if let (["speed"], SourceKind::Generator { speed, .. }) = (rest, &mut s.kind) {
+                    *speed = num()?.clamp(0.0, 10.0) as f32;
+                    return Ok(());
+                }
+                let pb = s.kind.playback_mut().ok_or_else(unknown)?;
+                match rest {
+                    ["play"] => pb.paused = !boolean()?,
+                    ["loop"] => pb.looping = boolean()?,
+                    ["speed"] => pb.speed = num()?.clamp(0.0, 16.0),
+                    ["restart"] => pb.restart_token = pb.restart_token.wrapping_add(1),
                     _ => return Err(unknown()),
                 }
             }
@@ -913,7 +1083,7 @@ pub fn demo_project() -> Project {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp, clippy::unwrap_used)]
+#[allow(clippy::float_cmp, clippy::unwrap_used, clippy::too_many_lines)]
 mod tests {
     use super::*;
     use crate::geom::Vec2;
@@ -1173,6 +1343,126 @@ color = [1.0, 0.0, 0.0, 1.0]
         p.surfaces[2].warp = WarpKind::Bezier(crate::warp::BezierMesh::flat(1, 1).unwrap());
         assert_eq!(get(&p, "/surface/logo/corner/0/x"), None);
         assert!(set(&mut p, "/surface/logo/corner/0/x", ParamValue::Number(0.0)).is_err());
+    }
+
+    #[test]
+    fn source_transport_params() {
+        let mut p = demo_project();
+        p.sources.push(Source {
+            id: "clip".into(),
+            kind: SourceKind::Video {
+                path: "clip.mp4".into(),
+                playback: Playback::default(),
+            },
+        });
+        p.sources.push(Source {
+            id: "gen".into(),
+            kind: SourceKind::Generator {
+                pattern: GeneratorKind::Plasma,
+                speed: 1.0,
+                color: [1.0; 4],
+            },
+        });
+        let set = |p: &mut Project, a: &str, v: ParamValue| {
+            p.apply_patch(&ParamPatch {
+                address: ParamAddress::parse(a).unwrap(),
+                value: v,
+            })
+        };
+        let get = |p: &Project, a: &str| p.get_param(&ParamAddress::parse(a).unwrap());
+        assert_eq!(get(&p, "/source/clip/play"), Some(ParamValue::Bool(true)));
+        set(&mut p, "/source/clip/play", ParamValue::Bool(false)).unwrap();
+        assert!(p.source("clip").unwrap().kind.playback().unwrap().paused);
+        set(&mut p, "/source/clip/loop", ParamValue::Bool(false)).unwrap();
+        assert_eq!(get(&p, "/source/clip/loop"), Some(ParamValue::Bool(false)));
+        set(&mut p, "/source/clip/speed", ParamValue::Number(99.0)).unwrap();
+        assert_eq!(
+            get(&p, "/source/clip/speed"),
+            Some(ParamValue::Number(16.0))
+        );
+        assert_eq!(
+            get(&p, "/source/clip/restart"),
+            Some(ParamValue::Bool(false))
+        );
+        set(&mut p, "/source/clip/restart", ParamValue::Bool(true)).unwrap();
+        assert_eq!(
+            p.source("clip")
+                .unwrap()
+                .kind
+                .playback()
+                .unwrap()
+                .restart_token,
+            1
+        );
+        assert!(set(&mut p, "/source/clip/nope", ParamValue::Bool(true)).is_err());
+        assert!(
+            set(&mut p, "/source/grid/play", ParamValue::Bool(true)).is_err(),
+            "patterns have no transport"
+        );
+        assert_eq!(get(&p, "/source/grid/play"), None);
+        assert!(set(&mut p, "/source/ghost/play", ParamValue::Bool(true)).is_err());
+        set(&mut p, "/source/gen/speed", ParamValue::Number(2.5)).unwrap();
+        assert_eq!(get(&p, "/source/gen/speed"), Some(ParamValue::Number(2.5)));
+        assert!(set(&mut p, "/source/gen/play", ParamValue::Bool(true)).is_err());
+        assert!(set(&mut p, "/source/clip/speed", ParamValue::Text("x".into())).is_err());
+        let text = p.to_toml().unwrap();
+        assert!(
+            !text.contains("restart_token"),
+            "restart token is never saved"
+        );
+        let back = Project::from_toml(&text).unwrap();
+        assert_eq!(
+            back.source("clip").unwrap().kind.playback().unwrap().speed,
+            16.0
+        );
+        let kinds = [
+            SourceKind::Video {
+                path: "v".into(),
+                playback: Playback::default(),
+            },
+            SourceKind::Sequence {
+                path: "d".into(),
+                fps: 25.0,
+                playback: Playback::default(),
+            },
+            SourceKind::Generator {
+                pattern: GeneratorKind::Noise,
+                speed: 1.0,
+                color: [1.0; 4],
+            },
+            SourceKind::Image { path: "i".into() },
+            SourceKind::Spout {
+                sender: String::new(),
+            },
+        ];
+        assert_eq!(
+            kinds.iter().map(SourceKind::label).collect::<Vec<_>>(),
+            ["video", "sequence", "generator", "image", "spout"]
+        );
+        assert_eq!(kinds[1].path(), Some("d"));
+        assert_eq!(kinds[2].path(), None);
+        assert!(kinds[2].playback().is_none());
+        let seq: Source =
+            toml::from_str("id = \"s\"\nkind = \"sequence\"\npath = \"frames\"").unwrap();
+        assert_eq!(
+            seq.kind,
+            SourceKind::Sequence {
+                path: "frames".into(),
+                fps: 25.0,
+                playback: Playback::default()
+            }
+        );
+        let g: Source =
+            toml::from_str("id = \"g\"\nkind = \"generator\"\npattern = \"radar\"\n").unwrap();
+        assert_eq!(
+            g.kind,
+            SourceKind::Generator {
+                pattern: GeneratorKind::Radar,
+                speed: 1.0,
+                color: [1.0; 4]
+            }
+        );
+        assert_eq!(GeneratorKind::ALL.len(), 6);
     }
 
     #[test]

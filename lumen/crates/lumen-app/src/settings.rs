@@ -30,6 +30,8 @@ pub struct Settings {
     pub autosave_seconds: u64,
     /// Skip the welcome screen on launch.
     pub skip_welcome: bool,
+    /// Explicit ffmpeg binary; empty means "search the PATH".
+    pub ffmpeg_path: String,
 }
 
 impl Default for Settings {
@@ -43,6 +45,7 @@ impl Default for Settings {
             grid_divisions: 10,
             autosave_seconds: 10,
             skip_welcome: false,
+            ffmpeg_path: String::new(),
         }
     }
 }

@@ -6,11 +6,15 @@
 
 #![forbid(unsafe_code)]
 
+pub mod clock;
+pub mod generator;
 pub mod pattern;
+pub mod sequence;
 #[cfg(feature = "spout")]
 pub mod spout;
+pub mod video;
 
-use lumen_core::project::{Project, Source, SourceKind};
+use lumen_core::project::{Playback, Project, Source, SourceKind};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -115,25 +119,43 @@ pub enum SourceError {
     /// The source kind is not available on this platform or build.
     #[error("source {0:?} needs the {1} feature, which this build lacks")]
     Unavailable(String, &'static str),
+    /// A video could not be probed or decoded.
+    #[error("cannot play video {0}: {1}")]
+    Video(PathBuf, String),
 }
 
 /// Anything that can produce frames over time.
 pub trait FrameSource: Send {
-    /// Latest frame, or `None` while nothing is available yet (a Spout sender that has not
-    /// started, for instance).
-    fn frame(&mut self) -> Option<Arc<Frame>>;
+    /// The frame to show at frame-clock time `t` (seconds since the show started), or `None`
+    /// while nothing is available yet (a Spout sender that has not started, for instance).
+    fn frame(&mut self, t: f64) -> Option<Arc<Frame>>;
     /// True when the source changes between calls, so the renderer should re-upload.
     fn is_live(&self) -> bool {
         false
     }
+    /// Adopts new transport settings. Static sources ignore this.
+    fn set_playback(&mut self, _playback: &Playback) {}
+    /// Adopts changed settings that do not need the file reopened (generator speed and
+    /// colour). Other sources ignore this.
+    fn configure(&mut self, _kind: &SourceKind) {}
 }
 
 /// A source that always returns the same frame.
 pub struct StaticSource(pub Arc<Frame>);
 
 impl FrameSource for StaticSource {
-    fn frame(&mut self) -> Option<Arc<Frame>> {
+    fn frame(&mut self, _t: f64) -> Option<Arc<Frame>> {
         Some(Arc::clone(&self.0))
+    }
+}
+
+/// Resolves a project-relative path.
+pub fn resolve(path: &str, base_dir: &Path) -> PathBuf {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base_dir.join(p)
     }
 }
 
@@ -153,16 +175,31 @@ pub fn open_source(source: &Source, base_dir: &Path) -> Result<Box<dyn FrameSour
             let c = color.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
             Ok(Box::new(StaticSource(Arc::new(Frame::solid(16, 16, c)))))
         }
-        SourceKind::Image { path } => {
-            let p = Path::new(path);
-            let full = if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                base_dir.join(p)
-            };
-            Ok(Box::new(StaticSource(Arc::new(Frame::load(&full)?))))
-        }
+        SourceKind::Image { path } => Ok(Box::new(StaticSource(Arc::new(Frame::load(&resolve(
+            path, base_dir,
+        ))?)))),
         SourceKind::Spout { sender } => open_spout(&source.id, sender),
+        SourceKind::Video { path, playback } => Ok(Box::new(video::VideoSource::open(
+            video::Tools::from_env(),
+            &resolve(path, base_dir),
+            *playback,
+        )?)),
+        SourceKind::Sequence {
+            path,
+            fps,
+            playback,
+        } => Ok(Box::new(sequence::SequenceSource::open(
+            &resolve(path, base_dir),
+            *fps,
+            *playback,
+        )?)),
+        SourceKind::Generator {
+            pattern,
+            speed,
+            color,
+        } => Ok(Box::new(generator::GeneratorSource::new(
+            *pattern, *speed, *color,
+        ))),
     }
 }
 
@@ -181,6 +218,7 @@ fn open_spout(id: &str, _sender: &str) -> Result<Box<dyn FrameSource>, SourceErr
 pub struct SourceSet {
     sources: HashMap<String, Box<dyn FrameSource>>,
     cache: HashMap<String, Arc<Frame>>,
+    time: f64,
 }
 
 impl SourceSet {
@@ -208,16 +246,46 @@ impl SourceSet {
             Self {
                 sources,
                 cache: HashMap::new(),
+                time: 0.0,
             },
             errors,
         )
     }
 
+    /// Sets the frame-clock time (seconds) that the next poll renders at.
+    pub fn set_time(&mut self, t: f64) {
+        self.time = t;
+    }
+
+    /// Frame-clock time of the last poll.
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+
     /// Polls every source once; call at the start of each rendered frame.
     pub fn poll(&mut self) {
         for (id, src) in &mut self.sources {
-            if let Some(f) = src.frame() {
+            if let Some(f) = src.frame(self.time) {
                 self.cache.insert(id.clone(), f);
+            }
+        }
+    }
+
+    /// Advances the clock to `t` and polls.
+    pub fn poll_at(&mut self, t: f64) {
+        self.set_time(t);
+        self.poll();
+    }
+
+    /// Pushes the project's current transport and generator settings into every live
+    /// source, so inspector, OSC and cue changes take effect without reopening files.
+    pub fn sync(&mut self, project: &Project) {
+        for s in &project.sources {
+            if let Some(src) = self.sources.get_mut(&s.id) {
+                if let Some(pb) = s.kind.playback() {
+                    src.set_playback(pb);
+                }
+                src.configure(&s.kind);
             }
         }
     }
@@ -234,6 +302,11 @@ impl SourceSet {
             .filter(|(_, s)| s.is_live())
             .map(|(id, _)| id.clone())
             .collect()
+    }
+
+    /// True when the source exists in this set.
+    pub fn contains(&self, id: &str) -> bool {
+        self.sources.contains_key(id)
     }
 
     /// Replaces or adds a source at runtime (used by the editor when a source is edited).
@@ -320,7 +393,7 @@ mod tests {
             },
         };
         let mut s = open_source(&src, dir.path()).unwrap();
-        assert_eq!(s.frame().unwrap().width, 4);
+        assert_eq!(s.frame(0.0).unwrap().width, 4);
         assert!(!s.is_live());
         let abs = Source {
             id: "i".into(),
@@ -340,7 +413,7 @@ mod tests {
             },
         };
         let mut s = open_source(&pat, Path::new(".")).unwrap();
-        assert_eq!(s.frame().unwrap().width, PATTERN_SIZE.0);
+        assert_eq!(s.frame(0.0).unwrap().width, PATTERN_SIZE.0);
         let solid = Source {
             id: "s".into(),
             kind: SourceKind::Solid {
@@ -348,7 +421,7 @@ mod tests {
             },
         };
         let mut s = open_source(&solid, Path::new(".")).unwrap();
-        assert_eq!(s.frame().unwrap().pixel(0, 0), [255, 128, 0, 255]);
+        assert_eq!(s.frame(0.0).unwrap().pixel(0, 0), [255, 128, 0, 255]);
         let spout = Source {
             id: "sp".into(),
             kind: SourceKind::Spout {
@@ -363,6 +436,76 @@ mod tests {
             assert!(matches!(e, SourceError::Unavailable(_, "spout")));
             assert!(e.to_string().contains("spout"));
         }
+    }
+
+    #[test]
+    fn new_kinds_open_and_playback_syncs() {
+        let dir = tempfile::tempdir().unwrap();
+        let seq = dir.path().join("frames");
+        std::fs::create_dir(&seq).unwrap();
+        for i in 0..2 {
+            image::RgbaImage::from_pixel(2, 2, image::Rgba([i * 100, 0, 0, 255]))
+                .save(seq.join(format!("{i}.png")))
+                .unwrap();
+        }
+        let mut p = Project::default();
+        p.sources.push(Source {
+            id: "seq".into(),
+            kind: SourceKind::Sequence {
+                path: "frames".into(),
+                fps: 10.0,
+                playback: Playback::default(),
+            },
+        });
+        p.sources.push(Source {
+            id: "gen".into(),
+            kind: SourceKind::Generator {
+                pattern: lumen_core::project::GeneratorKind::Plasma,
+                speed: 1.0,
+                color: [1.0; 4],
+            },
+        });
+        p.sources.push(Source {
+            id: "vid".into(),
+            kind: SourceKind::Video {
+                path: "missing.mp4".into(),
+                playback: Playback::default(),
+            },
+        });
+        let (mut set, errors) = SourceSet::open(&p, dir.path());
+        assert_eq!(errors.len(), 1, "the missing video fails: {errors:?}");
+        assert!(errors[0].to_string().contains("missing.mp4"));
+        assert!(set.contains("seq") && set.contains("gen") && !set.contains("nope"));
+        set.poll_at(0.0);
+        assert_eq!(set.time(), 0.0);
+        assert_eq!(set.frame("seq").unwrap().pixel(0, 0)[0], 0);
+        set.poll_at(0.15);
+        assert_eq!(set.frame("seq").unwrap().pixel(0, 0)[0], 100);
+        let g0 = Arc::clone(set.frame("gen").unwrap());
+        set.poll_at(0.5);
+        assert!(
+            !Arc::ptr_eq(&g0, set.frame("gen").unwrap()),
+            "generators animate"
+        );
+        assert_eq!(
+            set.live_ids().len(),
+            2,
+            "sequence and generator are live, the fallback is not"
+        );
+        p.sources[0].kind.playback_mut().unwrap().paused = true;
+        set.sync(&p);
+        set.poll_at(1.0);
+        let held = set.frame("seq").unwrap().pixel(0, 0)[0];
+        set.poll_at(1.5);
+        assert_eq!(set.frame("seq").unwrap().pixel(0, 0)[0], held);
+        assert_eq!(
+            resolve("/abs/x.png", Path::new("/base")),
+            PathBuf::from("/abs/x.png")
+        );
+        assert_eq!(
+            resolve("rel.png", Path::new("/base")),
+            PathBuf::from("/base/rel.png")
+        );
     }
 
     #[test]

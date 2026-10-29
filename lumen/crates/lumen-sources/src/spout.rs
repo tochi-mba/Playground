@@ -48,7 +48,7 @@ impl SpoutReceiver {
 }
 
 impl FrameSource for SpoutReceiver {
-    fn frame(&mut self) -> Option<Arc<Frame>> {
+    fn frame(&mut self, _t: f64) -> Option<Arc<Frame>> {
         self.last.clone()
     }
     fn is_live(&self) -> bool {
@@ -66,10 +66,10 @@ mod tests {
         let mut r = SpoutReceiver::new("Resolume");
         assert_eq!(r.sender(), "Resolume");
         assert!(!r.is_connected());
-        assert!(r.frame().is_none());
+        assert!(r.frame(0.0).is_none());
         assert!(r.is_live());
         r.push_frame(Frame::solid(2, 2, [1, 2, 3, 4]));
         assert!(r.is_connected());
-        assert_eq!(r.frame().unwrap().pixel(0, 0), [1, 2, 3, 4]);
+        assert_eq!(r.frame(0.0).unwrap().pixel(0, 0), [1, 2, 3, 4]);
     }
 }

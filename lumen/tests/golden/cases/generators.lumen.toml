@@ -1,0 +1,76 @@
+schema_version = 1
+name = "Six generators at time zero"
+
+[[sources]]
+id = "plasma"
+kind = "generator"
+pattern = "plasma"
+
+[[sources]]
+id = "noise"
+kind = "generator"
+pattern = "noise"
+color = [0.4, 0.8, 1.0, 1.0]
+
+[[sources]]
+id = "cycle"
+kind = "generator"
+pattern = "color_cycle"
+
+[[sources]]
+id = "strobe"
+kind = "generator"
+pattern = "strobe"
+color = [1.0, 0.2, 0.2, 1.0]
+
+[[sources]]
+id = "radar"
+kind = "generator"
+pattern = "radar"
+color = [0.3, 1.0, 0.4, 1.0]
+
+[[sources]]
+id = "grid"
+kind = "generator"
+pattern = "grid_pulse"
+
+[[outputs]]
+id = "main"
+width = 1920
+height = 1080
+
+[[surfaces]]
+id = "a"
+output = "main"
+source = "plasma"
+warp = { kind = "quad", corners = [{ x = 0.0, y = 0.0 }, { x = 0.33, y = 0.0 }, { x = 0.33, y = 0.5 }, { x = 0.0, y = 0.5 }] }
+
+[[surfaces]]
+id = "b"
+output = "main"
+source = "noise"
+warp = { kind = "quad", corners = [{ x = 0.33, y = 0.0 }, { x = 0.66, y = 0.0 }, { x = 0.66, y = 0.5 }, { x = 0.33, y = 0.5 }] }
+
+[[surfaces]]
+id = "c"
+output = "main"
+source = "cycle"
+warp = { kind = "quad", corners = [{ x = 0.66, y = 0.0 }, { x = 1.0, y = 0.0 }, { x = 1.0, y = 0.5 }, { x = 0.66, y = 0.5 }] }
+
+[[surfaces]]
+id = "d"
+output = "main"
+source = "strobe"
+warp = { kind = "quad", corners = [{ x = 0.0, y = 0.5 }, { x = 0.33, y = 0.5 }, { x = 0.33, y = 1.0 }, { x = 0.0, y = 1.0 }] }
+
+[[surfaces]]
+id = "e"
+output = "main"
+source = "radar"
+warp = { kind = "quad", corners = [{ x = 0.33, y = 0.5 }, { x = 0.66, y = 0.5 }, { x = 0.66, y = 1.0 }, { x = 0.33, y = 1.0 }] }
+
+[[surfaces]]
+id = "f"
+output = "main"
+source = "grid"
+warp = { kind = "quad", corners = [{ x = 0.66, y = 0.5 }, { x = 1.0, y = 0.5 }, { x = 1.0, y = 1.0 }, { x = 0.66, y = 1.0 }] }

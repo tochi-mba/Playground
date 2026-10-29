@@ -1,12 +1,13 @@
 //! Toolbar, status bar, object tree, inspector, dialogs and the show-mode screen.
 
 use super::canvas::CanvasState;
+use super::thumbs::Thumbnails;
 use super::{AlignOp, Editor, MonitorInfo, Pending, Selection};
 use crate::settings::Settings;
 use eframe::egui::{self, Color32, RichText};
 use lumen_core::blend::BlendCurve;
 use lumen_core::params::ParamValue;
-use lumen_core::project::{BlendMode, Placement, SourceKind, TestPattern};
+use lumen_core::project::{BlendMode, GeneratorKind, Placement, SourceKind, TestPattern};
 use lumen_core::warp::{BezierMesh, WarpKind};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -19,6 +20,8 @@ pub trait FileDialogs {
     fn save_project(&mut self, suggested: Option<&Path>) -> Option<PathBuf>;
     /// Choose media files to add as sources.
     fn pick_media(&mut self) -> Vec<PathBuf>;
+    /// Choose a folder of image frames.
+    fn pick_folder(&mut self) -> Option<PathBuf>;
 }
 
 /// The real dialogs.
@@ -47,9 +50,12 @@ impl FileDialogs for NativeDialogs {
     }
     fn pick_media(&mut self) -> Vec<PathBuf> {
         rfd::FileDialog::new()
-            .add_filter("images", &["png", "jpg", "jpeg"])
+            .add_filter("media", super::state::MEDIA_EXTENSIONS)
             .pick_files()
             .unwrap_or_default()
+    }
+    fn pick_folder(&mut self) -> Option<PathBuf> {
+        rfd::FileDialog::new().pick_folder()
     }
 }
 
@@ -63,6 +69,8 @@ pub struct FakeDialogs {
     pub save: Option<PathBuf>,
     /// Returned by the next `pick_media`.
     pub media: Vec<PathBuf>,
+    /// Returned by the next `pick_folder`.
+    pub folder: Option<PathBuf>,
 }
 
 #[cfg(test)]
@@ -75,6 +83,9 @@ impl FileDialogs for FakeDialogs {
     }
     fn pick_media(&mut self) -> Vec<PathBuf> {
         std::mem::take(&mut self.media)
+    }
+    fn pick_folder(&mut self) -> Option<PathBuf> {
+        self.folder.take()
     }
 }
 
@@ -94,12 +105,16 @@ pub struct Actions {
     pub new: bool,
     /// Add media through the dialog.
     pub add_media: bool,
+    /// Add an image-sequence folder through the dialog.
+    pub add_folder: bool,
     /// Create outputs for the detected monitors.
     pub create_outputs: bool,
     /// The unsaved-changes prompt was answered: proceed or cancel.
     pub resolve_pending: Option<bool>,
     /// Never show the welcome screen again.
     pub skip_welcome: bool,
+    /// New ffmpeg path to remember and use.
+    pub ffmpeg_path: Option<String>,
 }
 
 /// Transient UI state for the panels.
@@ -120,6 +135,12 @@ pub struct PanelState {
     pub error: Option<String>,
     /// Id being edited in the rename box.
     pub rename: Option<(String, String)>,
+    /// Thumbnail textures.
+    pub thumbs: Thumbnails,
+    /// Whether ffmpeg was found at startup.
+    pub ffmpeg_ok: bool,
+    /// ffmpeg path field.
+    pub ffmpeg_path: String,
 }
 
 impl Default for PanelState {
@@ -133,6 +154,9 @@ impl Default for PanelState {
             mesh_rows: 2,
             error: None,
             rename: None,
+            thumbs: Thumbnails::default(),
+            ffmpeg_ok: lumen_sources::video::Tools::from_env().available(),
+            ffmpeg_path: std::env::var("LUMEN_FFMPEG").unwrap_or_default(),
         }
     }
 }
@@ -396,7 +420,12 @@ pub fn status_bar(
 
 /// Outputs, surfaces and sources tree.
 #[allow(clippy::too_many_lines)]
-pub fn left_panel(ui: &mut egui::Ui, editor: &mut Editor, actions: &mut Actions) {
+pub fn left_panel(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut PanelState,
+    actions: &mut Actions,
+) {
     egui::Panel::left("lumen-left").default_size(240.0).show(ui, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -471,6 +500,17 @@ pub fn left_panel(ui: &mut egui::Ui, editor: &mut Editor, actions: &mut Actions)
                         actions.add_media = true;
                         ui.close();
                     }
+                    if ui.button("Image sequence folder…").clicked() {
+                        actions.add_folder = true;
+                        ui.close();
+                    }
+                    ui.separator();
+                    for g in GeneratorKind::ALL {
+                        if ui.button(format!("Generator: {g:?}")).clicked() {
+                            editor.add_source(SourceKind::Generator { pattern: g, speed: 1.0, color: [1.0; 4] });
+                            ui.close();
+                        }
+                    }
                     ui.separator();
                     for (label, pattern) in [("Grid", TestPattern::Grid), ("Bars", TestPattern::Bars), ("Checker", TestPattern::Checker), ("Ramp", TestPattern::Ramp)] {
                         if ui.button(format!("Pattern: {label}")).clicked() {
@@ -486,8 +526,18 @@ pub fn left_panel(ui: &mut egui::Ui, editor: &mut Editor, actions: &mut Actions)
             });
             let sources: Vec<_> = editor.project.sources.iter().map(|s| (s.id.clone(), describe(&s.kind))).collect();
             for (id, desc) in sources {
+                let selected = editor.selection == Selection::Source(id.clone());
                 ui.horizontal(|ui| {
-                    ui.label(&id);
+                    if let Some(frame) = editor.sources.frame(&id).cloned() {
+                        let (tex, size) = state.thumbs.get(ui.ctx(), &id, &frame);
+                        let h = 28.0;
+                        let w = (h * size.0 as f32 / size.1.max(1) as f32).clamp(8.0, 64.0);
+                        ui.add(egui::Image::new((tex, egui::Vec2::new(w, h))));
+                    }
+                    if ui.selectable_label(selected, &id).clicked() {
+                        editor.selection = Selection::Source(id.clone());
+                        editor.extra_selected.clear();
+                    }
                     ui.label(RichText::new(desc).weak().small());
                     let used = editor.project.surfaces.iter().any(|s| s.source == id);
                     if ui.add_enabled(!used, egui::Button::new("×").small()).on_hover_text("Remove (unused sources only)").clicked() {
@@ -497,7 +547,7 @@ pub fn left_panel(ui: &mut egui::Ui, editor: &mut Editor, actions: &mut Actions)
                 });
             }
             ui.add_space(8.0);
-            ui.label(RichText::new("Drop image files anywhere to add them.").weak().small());
+            ui.label(RichText::new("Drop images, videos, GIFs or frame folders anywhere to add them.").weak().small());
         });
     });
 }
@@ -553,6 +603,12 @@ fn describe(kind: &SourceKind) -> String {
                 sender
             }
         ),
+        SourceKind::Video { path, playback } => format!(
+            "video {path}{}",
+            if playback.paused { " (paused)" } else { "" }
+        ),
+        SourceKind::Sequence { path, .. } => format!("sequence {path}"),
+        SourceKind::Generator { pattern, .. } => format!("generator {pattern:?}").to_lowercase(),
     }
 }
 
@@ -605,6 +661,7 @@ pub fn inspector(
                 Selection::None => show_inspector(ui, editor, state, actions),
                 Selection::Output(id) => output_inspector(ui, editor, &id, monitors, state),
                 Selection::Surface { id, mask } => surface_inspector(ui, editor, &id, mask, state),
+                Selection::Source(id) => source_inspector(ui, editor, &id, state),
             });
         });
 }
@@ -635,9 +692,29 @@ fn show_inspector(
     });
     ui.label(RichText::new("Addresses: /show/blackout, /show/master, /surface/<id>/opacity|visible|z|corner/<n>/x|y, /output/<id>/enabled|brightness|contrast|gamma|blend/<edge>/width").weak().small());
     ui.separator();
-    if ui.button("Add media…").clicked() {
-        actions.add_media = true;
-    }
+    ui.horizontal(|ui| {
+        if ui.button("Add media…").clicked() {
+            actions.add_media = true;
+        }
+        if ui.button("Add frame folder…").clicked() {
+            actions.add_folder = true;
+        }
+    });
+    ui.separator();
+    ui.label(if state.ffmpeg_ok {
+        "ffmpeg found: video sources play."
+    } else {
+        "ffmpeg not found: install it or point lumen at it below."
+    });
+    ui.horizontal(|ui| {
+        let label = ui.label("ffmpeg path");
+        let r = ui
+            .text_edit_singleline(&mut state.ffmpeg_path)
+            .labelled_by(label.id);
+        if r.lost_focus() {
+            actions.ffmpeg_path = Some(state.ffmpeg_path.trim().to_string());
+        }
+    });
     let label = ui.heading("Add Spout source");
     ui.text_edit_singleline(&mut state.spout_sender)
         .labelled_by(label.id);
@@ -951,29 +1028,8 @@ fn surface_inspector(
         });
     }
     ui.separator();
-    ui.label("Crop (normalised source rect)");
-    let mut crop = surface.crop;
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        for (label, v) in [
-            ("x", &mut crop.x),
-            ("y", &mut crop.y),
-            ("w", &mut crop.w),
-            ("h", &mut crop.h),
-        ] {
-            ui.label(label);
-            let r = ui.add(egui::DragValue::new(v).speed(0.005).range(0.0..=1.0));
-            changed |= r.drag_stopped() || r.lost_focus();
-        }
-    });
-    if changed && crop != surface.crop {
-        let id = id.to_string();
-        editor.edit(move |p| {
-            if let Some(s) = p.surface_mut(&id) {
-                s.crop = crop;
-            }
-        });
-    }
+    ui.label("Crop: drag the box corners on the source preview");
+    crop_preview(ui, editor, state, id, &surface);
     ui.separator();
     ui.label("Warp");
     match &surface.warp {
@@ -1122,6 +1178,264 @@ fn surface_inspector(
     if let Some(e) = &state.error {
         ui.colored_label(Color32::LIGHT_RED, e);
     }
+}
+
+/// Inspector for a source: preview, transport, generator and file settings.
+#[allow(clippy::too_many_lines)]
+fn source_inspector(ui: &mut egui::Ui, editor: &mut Editor, id: &str, state: &mut PanelState) {
+    ui.heading(format!("Source {id}"));
+    if rename_box(ui, editor, state, id) {
+        return;
+    }
+    let Some(source) = editor.project.source(id).cloned() else {
+        return;
+    };
+    ui.label(RichText::new(describe(&source.kind)).weak());
+    if let Some(frame) = editor.sources.frame(id).cloned() {
+        let (tex, size) = state.thumbs.get(ui.ctx(), id, &frame);
+        let w = ui.available_width().min(280.0);
+        let h = w * size.1 as f32 / size.0.max(1) as f32;
+        ui.add(egui::Image::new((tex, egui::Vec2::new(w, h))));
+        ui.label(
+            RichText::new(format!("{} × {} px", frame.width, frame.height))
+                .weak()
+                .small(),
+        );
+    }
+    if let Some(pb) = source.kind.playback() {
+        ui.separator();
+        ui.horizontal(|ui| {
+            if ui
+                .button(if pb.paused { "Play" } else { "Pause" })
+                .clicked()
+            {
+                editor.edit_source(id, |k| {
+                    if let Some(p) = k.playback_mut() {
+                        p.paused = !p.paused;
+                    }
+                });
+            }
+            if ui.button("Restart").clicked() {
+                editor.edit_source(id, |k| {
+                    if let Some(p) = k.playback_mut() {
+                        p.restart_token = p.restart_token.wrapping_add(1);
+                    }
+                });
+                editor.sources.sync(&editor.project);
+            }
+            let mut looping = pb.looping;
+            if ui.checkbox(&mut looping, "Loop").changed() {
+                editor.edit_source(id, |k| {
+                    if let Some(p) = k.playback_mut() {
+                        p.looping = looping;
+                    }
+                });
+            }
+        });
+        let mut speed = pb.speed;
+        let r = ui.add(egui::Slider::new(&mut speed, 0.0..=4.0).text("Speed"));
+        if r.drag_stopped() || r.lost_focus() {
+            editor.edit_source(id, |k| {
+                if let Some(p) = k.playback_mut() {
+                    p.speed = speed;
+                }
+            });
+        }
+        ui.label(
+            RichText::new(format!("OSC: /source/{id}/play|loop|speed|restart"))
+                .weak()
+                .small(),
+        );
+    }
+    match &source.kind {
+        SourceKind::Generator {
+            pattern,
+            speed,
+            color,
+        } => {
+            ui.separator();
+            let mut chosen = *pattern;
+            egui::ComboBox::from_label("Pattern")
+                .selected_text(format!("{chosen:?}"))
+                .show_ui(ui, |ui| {
+                    for g in GeneratorKind::ALL {
+                        ui.selectable_value(&mut chosen, g, format!("{g:?}"));
+                    }
+                });
+            if chosen != *pattern {
+                editor.edit_source(id, |k| {
+                    if let SourceKind::Generator { pattern, .. } = k {
+                        *pattern = chosen;
+                    }
+                });
+            }
+            let mut sp = *speed;
+            let r = ui.add(egui::Slider::new(&mut sp, 0.0..=4.0).text("Animation speed"));
+            if r.drag_stopped() || r.lost_focus() {
+                editor.edit_source(id, |k| {
+                    if let SourceKind::Generator { speed, .. } = k {
+                        *speed = sp;
+                    }
+                });
+            }
+            let mut c = *color;
+            ui.horizontal(|ui| {
+                ui.label("Tint");
+                if ui.color_edit_button_rgba_unmultiplied(&mut c).changed()
+                    && c.iter()
+                        .zip(color.iter())
+                        .any(|(a, b)| (a - b).abs() > f32::EPSILON)
+                {
+                    editor.edit_source(id, |k| {
+                        if let SourceKind::Generator { color, .. } = k {
+                            *color = c;
+                        }
+                    });
+                }
+            });
+        }
+        SourceKind::Sequence { fps, path, .. } => {
+            ui.separator();
+            ui.label(format!("Path: {path}"));
+            if !path.to_ascii_lowercase().ends_with(".gif") {
+                let mut f = *fps;
+                let r = ui.add(egui::Slider::new(&mut f, 1.0..=120.0).text("Frames per second"));
+                if r.drag_stopped() || r.lost_focus() {
+                    editor.edit_source(id, |k| {
+                        if let SourceKind::Sequence { fps, .. } = k {
+                            *fps = f;
+                        }
+                    });
+                }
+            }
+        }
+        SourceKind::Video { path, .. } | SourceKind::Image { path } => {
+            ui.separator();
+            ui.label(format!("Path: {path}"));
+            if matches!(source.kind, SourceKind::Video { .. }) && !state.ffmpeg_ok {
+                ui.colored_label(
+                    Color32::LIGHT_RED,
+                    "ffmpeg not found: this video cannot play. Set the path in the Show panel.",
+                );
+            }
+        }
+        SourceKind::Solid { color } => {
+            ui.separator();
+            let mut c = *color;
+            ui.horizontal(|ui| {
+                ui.label("Colour");
+                if ui.color_edit_button_rgba_unmultiplied(&mut c).changed()
+                    && c.iter()
+                        .zip(color.iter())
+                        .any(|(a, b)| (a - b).abs() > f32::EPSILON)
+                {
+                    editor.edit_source(id, |k| {
+                        if let SourceKind::Solid { color } = k {
+                            *color = c;
+                        }
+                    });
+                    editor.reload_sources();
+                }
+            });
+        }
+        SourceKind::TestPattern { .. } | SourceKind::Spout { .. } => {}
+    }
+    ui.separator();
+    let used = editor
+        .project
+        .surfaces
+        .iter()
+        .filter(|s| s.source == *id)
+        .count();
+    ui.label(RichText::new(format!("used by {used} surface(s)")).weak());
+    if ui
+        .add_enabled(used == 0, egui::Button::new("Delete source"))
+        .clicked()
+    {
+        editor.selection = Selection::Source(id.to_string());
+        editor.delete_selection();
+    }
+}
+
+/// Source preview with a draggable crop box.
+fn crop_preview(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    state: &mut PanelState,
+    id: &str,
+    surface: &lumen_core::project::Surface,
+) {
+    let Some(frame) = editor.sources.frame(&surface.source).cloned() else {
+        ui.label(RichText::new("(no frame yet)").weak());
+        return;
+    };
+    let (tex, size) = state.thumbs.get(ui.ctx(), &surface.source, &frame);
+    let w = ui.available_width().min(280.0);
+    let h = (w * size.1 as f32 / size.0.max(1) as f32).max(40.0);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::Vec2::new(w, h), egui::Sense::click_and_drag());
+    ui.painter().image(
+        tex,
+        rect,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+        Color32::WHITE,
+    );
+    let c = surface.crop;
+    let to_screen = |x: f64, y: f64| {
+        egui::Pos2::new(
+            rect.min.x + x as f32 * rect.width(),
+            rect.min.y + y as f32 * rect.height(),
+        )
+    };
+    let box_rect = egui::Rect::from_min_max(to_screen(c.x, c.y), to_screen(c.x + c.w, c.y + c.h));
+    ui.painter().rect_stroke(
+        box_rect,
+        0.0,
+        egui::Stroke::new(1.5, Color32::from_rgb(255, 200, 60)),
+        egui::StrokeKind::Outside,
+    );
+    for p in [box_rect.min, box_rect.max] {
+        ui.painter()
+            .circle_filled(p, 5.0, Color32::from_rgb(255, 200, 60));
+    }
+    if response.dragged() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
+            let nx = f64::from(((pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0));
+            let ny = f64::from(((pos.y - rect.min.y) / rect.height()).clamp(0.0, 1.0));
+            let mut crop = c;
+            if origin.distance(box_rect.min) <= 12.0 {
+                let (x1, y1) = (c.x + c.w, c.y + c.h);
+                crop.x = nx.min(x1 - 0.01);
+                crop.y = ny.min(y1 - 0.01);
+                crop.w = x1 - crop.x;
+                crop.h = y1 - crop.y;
+            } else if origin.distance(box_rect.max) <= 12.0 {
+                crop.w = (nx - c.x).max(0.01);
+                crop.h = (ny - c.y).max(0.01);
+            } else {
+                let d = response.drag_delta();
+                crop.x = (c.x + f64::from(d.x / rect.width())).clamp(0.0, 1.0 - c.w);
+                crop.y = (c.y + f64::from(d.y / rect.height())).clamp(0.0, 1.0 - c.h);
+            }
+            editor.set_crop(id, crop);
+        }
+    }
+    if response.drag_stopped() {
+        editor.commit();
+    }
+    if response.double_clicked() {
+        editor.set_crop(id, lumen_core::project::Crop::default());
+        editor.commit();
+    }
+    ui.label(
+        RichText::new(format!(
+            "x {:.3}  y {:.3}  w {:.3}  h {:.3}  (double-click to reset)",
+            c.x, c.y, c.w, c.h
+        ))
+        .weak()
+        .small(),
+    );
 }
 
 /// Modal prompts: autosave recovery, unsaved changes, welcome and the cheat sheet.

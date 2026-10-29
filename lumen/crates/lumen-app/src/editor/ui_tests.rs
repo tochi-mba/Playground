@@ -1,6 +1,11 @@
 //! Headless tests of the real editor UI, driven through egui's accessibility tree.
 
-#![allow(clippy::unwrap_used, clippy::float_cmp, clippy::too_many_lines)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::too_many_lines,
+    clippy::print_stderr
+)]
 
 use super::handles::Mapping;
 use super::panels::FakeDialogs;
@@ -71,6 +76,9 @@ fn settle(h: &mut Harness<'static, LumenApp>) {
 }
 
 fn click(h: &mut Harness<'static, LumenApp>, label: &str) {
+    // Inspectors scroll; bring the control into view before clicking it.
+    h.get_by_label(label).scroll_to_me();
+    settle(h);
     h.get_by_label(label).click();
     settle(h);
 }
@@ -974,4 +982,222 @@ fn empty_project_canvas_asks_for_an_output() {
         .query_by_label("Add an output to start mapping (or drop an image here).")
         .is_some());
     assert!(h.state().canvas.last_rect.is_none());
+}
+
+#[test]
+fn source_inspector_transport_and_generator_controls() {
+    let dir = tempfile::tempdir().unwrap();
+    let seq = dir.path().join("frames");
+    std::fs::create_dir(&seq).unwrap();
+    for i in 0..3 {
+        image::RgbaImage::from_pixel(4, 2, image::Rgba([i * 40, 0, 0, 255]))
+            .save(seq.join(format!("f{i}.png")))
+            .unwrap();
+    }
+    let mut h = harness(Editor::new(demo_project(), None));
+    // Folder dialog adds a sequence source and a surface on the first output.
+    fake(&mut h, |d| d.folder = Some(seq.clone()));
+    click(&mut h, "+ source");
+    click(&mut h, "Image sequence folder…");
+    assert!(h.state().editor.project.source("frames").is_some());
+    assert!(
+        !h.state().panels.thumbs.is_empty(),
+        "thumbnails are built for sources with frames"
+    );
+    click(&mut h, "frames");
+    assert_eq!(
+        h.state().editor.selection,
+        Selection::Source("frames".into())
+    );
+    assert!(h.query_by_label("Source frames").is_some());
+    click(&mut h, "Pause");
+    assert!(
+        h.state()
+            .editor
+            .project
+            .source("frames")
+            .unwrap()
+            .kind
+            .playback()
+            .unwrap()
+            .paused
+    );
+    click(&mut h, "Play");
+    assert!(
+        !h.state()
+            .editor
+            .project
+            .source("frames")
+            .unwrap()
+            .kind
+            .playback()
+            .unwrap()
+            .paused
+    );
+    click(&mut h, "Loop");
+    assert!(
+        !h.state()
+            .editor
+            .project
+            .source("frames")
+            .unwrap()
+            .kind
+            .playback()
+            .unwrap()
+            .looping
+    );
+    click(&mut h, "Restart");
+    assert_eq!(
+        h.state()
+            .editor
+            .project
+            .source("frames")
+            .unwrap()
+            .kind
+            .playback()
+            .unwrap()
+            .restart_token,
+        1
+    );
+    assert!(h.query_by_label("Delete source").is_some());
+
+    // Generators from the menu, with the pattern combo.
+    click(&mut h, "+ source");
+    click(&mut h, "Generator: Plasma");
+    assert!(h.state().editor.project.source("generator").is_some());
+    click(&mut h, "generator");
+    h.get_by_value("Plasma").click();
+    settle(&mut h);
+    click(&mut h, "Radar");
+    assert!(matches!(
+        h.state().editor.project.source("generator").unwrap().kind,
+        lumen_core::project::SourceKind::Generator {
+            pattern: lumen_core::project::GeneratorKind::Radar,
+            ..
+        }
+    ));
+    assert!(h
+        .state()
+        .editor
+        .sources
+        .live_ids()
+        .contains(&"generator".to_string()));
+    // Unused generator can be deleted from its inspector.
+    click(&mut h, "Delete source");
+    assert!(h.state().editor.project.source("generator").is_none());
+    assert_eq!(h.state().editor.selection, Selection::None);
+    // A used source cannot be deleted (status says why).
+    h.state_mut().editor.selection = Selection::Source("grid".into());
+    h.state_mut().editor.delete_selection();
+    assert!(h.state().editor.project.source("grid").is_some());
+    assert!(h.state().editor.status.contains("still used"));
+}
+
+#[test]
+fn crop_preview_drags_and_resets() {
+    let mut h = harness(Editor::new(demo_project(), None));
+    click(&mut h, "wall-right");
+    // The crop box of wall-right is full frame; find the preview by its caption and drag the
+    // bottom-right handle inward.
+    let caption = h.get_by_label_contains("double-click to reset");
+    let caption_rect = caption.rect();
+    // The preview sits just above the caption and is 280 px wide.
+    let preview = egui::Rect::from_min_size(
+        egui::Pos2::new(
+            caption_rect.min.x,
+            caption_rect.min.y - 280.0 * 1080.0 / 1920.0 - 4.0,
+        ),
+        egui::Vec2::new(280.0, 280.0 * 1080.0 / 1920.0),
+    );
+    let br = preview.max;
+    drag(
+        &mut h,
+        br - egui::Vec2::new(2.0, 2.0),
+        br - egui::Vec2::new(80.0, 40.0),
+    );
+    let initial = demo_project().surface("wall-right").unwrap().crop;
+    let crop = h.state().editor.project.surface("wall-right").unwrap().crop;
+    assert!(crop.w < initial.w || crop.h < initial.h, "{crop:?}");
+    assert_eq!(
+        h.state().editor.history.undo_len(),
+        1,
+        "one drag, one undo step"
+    );
+    // Move the box.
+    let centre = preview.center();
+    drag(&mut h, centre, centre + egui::Vec2::new(10.0, 0.0));
+    let moved = h.state().editor.project.surface("wall-right").unwrap().crop;
+    assert!(moved.x > crop.x, "{moved:?} vs {crop:?}");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    settle(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    settle(&mut h);
+    assert_eq!(
+        h.state().editor.project.surface("wall-right").unwrap().crop,
+        initial
+    );
+}
+
+#[test]
+fn media_dialog_accepts_video_when_ffmpeg_exists() {
+    let tools = lumen_sources::video::Tools::from_env();
+    let mut h = harness(Editor::new(demo_project(), None));
+    assert_eq!(h.state().panels.ffmpeg_ok, tools.available());
+    if !tools.available() {
+        eprintln!("skipping video part: no ffmpeg");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let clip = dir.path().join("clip.mp4");
+    let ok = std::process::Command::new(&tools.ffmpeg)
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=32x18:rate=5:duration=1",
+            "-pix_fmt",
+            "yuv420p",
+        ])
+        .arg(&clip)
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+    click(&mut h, "right");
+    fake(&mut h, |d| d.media = vec![clip.clone()]);
+    menu(&mut h, "File", "Add media…");
+    assert!(matches!(
+        h.state().editor.project.source("clip").unwrap().kind,
+        lumen_core::project::SourceKind::Video { .. }
+    ));
+    assert_eq!(
+        h.state()
+            .editor
+            .project
+            .surface("clip-surface")
+            .unwrap()
+            .output,
+        "right"
+    );
+    // Frames arrive over the next steps.
+    for _ in 0..100 {
+        if h.state().editor.sources.frame("clip").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        h.step();
+    }
+    assert!(
+        h.state().editor.sources.frame("clip").is_some(),
+        "the video produced a frame"
+    );
+    click(&mut h, "clip");
+    assert!(h.query_by_label("Pause").is_some());
+    assert!(
+        h.query_by_label_contains("ffmpeg found").is_none(),
+        "the show panel is not visible now"
+    );
 }

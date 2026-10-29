@@ -104,7 +104,7 @@ pub fn show(
     let selected_output = match &editor.selection {
         Selection::Output(id) => Some(id.clone()),
         Selection::Surface { id, .. } => editor.project.surface(id).map(|s| s.output.clone()),
-        Selection::None => None,
+        Selection::None | Selection::Source(_) => None,
     };
     if let Some(o) = selected_output {
         if state.output.as_ref() != Some(&o) {

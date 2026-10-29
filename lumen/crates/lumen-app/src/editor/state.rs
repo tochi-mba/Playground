@@ -5,7 +5,9 @@ use lumen_control::OscServer;
 use lumen_core::geom::Vec2;
 use lumen_core::mask::Mask;
 use lumen_core::params::{ParamAddress, ParamValue};
-use lumen_core::project::{Output, Project, Source, SourceKind, Surface, TestPattern};
+use lumen_core::project::{
+    Crop, Output, Playback, Project, Source, SourceKind, Surface, TestPattern,
+};
 use lumen_core::undo::{Command, History, SetValue};
 use lumen_core::warp::WarpKind;
 use lumen_render::scene::MaskCache;
@@ -28,6 +30,8 @@ pub enum Selection {
         /// Selected mask index.
         mask: Option<usize>,
     },
+    /// A source.
+    Source(String),
 }
 
 /// Replaces a surface's whole warp or mask list; coalesces while a handle is dragged.
@@ -50,6 +54,8 @@ pub enum GeometryKind {
     Warp,
     /// The masks.
     Masks,
+    /// The source crop.
+    Crop,
 }
 
 /// Payload of a [`SetGeometry`].
@@ -59,6 +65,8 @@ pub enum Geometry {
     Warp(WarpKind),
     /// A mask list.
     Masks(Vec<Mask>),
+    /// A crop rectangle.
+    Crop(Crop),
 }
 
 impl Command<Project> for SetGeometry {
@@ -67,6 +75,7 @@ impl Command<Project> for SetGeometry {
             match &self.after {
                 Geometry::Warp(w) => s.warp.clone_from(w),
                 Geometry::Masks(m) => s.masks.clone_from(m),
+                Geometry::Crop(c) => s.crop = *c,
             }
         }
     }
@@ -75,6 +84,7 @@ impl Command<Project> for SetGeometry {
             match &self.before {
                 Geometry::Warp(w) => s.warp.clone_from(w),
                 Geometry::Masks(m) => s.masks.clone_from(m),
+                Geometry::Crop(c) => s.crop = *c,
             }
         }
     }
@@ -114,16 +124,38 @@ impl Command<Project> for Snapshot {
     }
 }
 
-/// Source kind for a file picked or dropped, by extension.
+/// Source kind for a file or folder picked or dropped, by extension.
 pub fn source_kind_for(path: &Path) -> Option<SourceKind> {
+    let text = path.to_string_lossy().into_owned();
+    if path.is_dir() {
+        return Some(SourceKind::Sequence {
+            path: text,
+            fps: 25.0,
+            playback: Playback::default(),
+        });
+    }
     let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
     match ext.as_str() {
-        "png" | "jpg" | "jpeg" => Some(SourceKind::Image {
-            path: path.to_string_lossy().into_owned(),
+        "png" | "jpg" | "jpeg" => Some(SourceKind::Image { path: text }),
+        "gif" => Some(SourceKind::Sequence {
+            path: text,
+            fps: 25.0,
+            playback: Playback::default(),
         }),
+        "mp4" | "mov" | "mkv" | "webm" | "avi" | "m4v" | "mpg" | "mpeg" | "wmv" => {
+            Some(SourceKind::Video {
+                path: text,
+                playback: Playback::default(),
+            })
+        }
         _ => None,
     }
 }
+
+/// File extensions the media dialog offers.
+pub const MEDIA_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "mp4", "mov", "mkv", "webm", "avi", "m4v", "mpg", "mpeg", "wmv",
+];
 
 /// The editor's model.
 pub struct Editor {
@@ -359,6 +391,60 @@ impl Editor {
         true
     }
 
+    /// Replaces a surface's crop through the history (coalesces while dragging).
+    pub fn set_crop(&mut self, surface: &str, crop: Crop) -> bool {
+        if self.show_mode {
+            return false;
+        }
+        let Some(before) = self.project.surface(surface).map(|s| s.crop) else {
+            return false;
+        };
+        if before == crop {
+            return true;
+        }
+        self.history.push(
+            &mut self.project,
+            Box::new(SetGeometry {
+                surface: surface.into(),
+                what: GeometryKind::Crop,
+                before: Geometry::Crop(before),
+                after: Geometry::Crop(crop),
+            }),
+        );
+        self.dirty = true;
+        true
+    }
+
+    /// Edits a source's kind in place (transport, generator settings, paths) as one undo step
+    /// and pushes the change into the live source without reopening files where possible.
+    pub fn edit_source(&mut self, id: &str, f: impl FnOnce(&mut SourceKind)) -> bool {
+        if self.show_mode || self.project.source(id).is_none() {
+            return false;
+        }
+        let before = self.project.source(id).map(|s| s.kind.clone());
+        let id_owned = id.to_string();
+        let changed = self.edit(move |p| {
+            if let Some(s) = p.sources.iter_mut().find(|s| s.id == id_owned) {
+                f(&mut s.kind);
+            }
+        });
+        let after = self.project.source(id).map(|s| s.kind.clone());
+        if before != after {
+            let reopen = match (&before, &after) {
+                (Some(b), Some(a)) => {
+                    b.path() != a.path() || std::mem::discriminant(b) != std::mem::discriminant(a)
+                }
+                _ => true,
+            };
+            if reopen {
+                self.reload_sources();
+            } else {
+                self.sources.sync(&self.project);
+            }
+        }
+        changed
+    }
+
     /// Replaces a surface's masks through the history.
     pub fn set_masks(&mut self, surface: &str, masks: Vec<Mask>) -> bool {
         if self.show_mode {
@@ -474,7 +560,7 @@ impl Editor {
                 visible: true,
                 opacity: 1.0,
                 blend_mode: lumen_core::project::BlendMode::Normal,
-                crop: lumen_core::project::Crop::default(),
+                crop: Crop::default(),
                 warp: WarpKind::default(),
                 masks: Vec::new(),
                 locked: false,
@@ -485,13 +571,7 @@ impl Editor {
 
     /// Adds a source.
     pub fn add_source(&mut self, kind: SourceKind) -> String {
-        let prefix = match &kind {
-            SourceKind::TestPattern { .. } => "pattern",
-            SourceKind::Solid { .. } => "solid",
-            SourceKind::Image { .. } => "image",
-            SourceKind::Spout { .. } => "spout",
-        };
-        let id = self.fresh_id(prefix);
+        let id = self.fresh_id(kind.label());
         let new_id = id.clone();
         self.edit(|p| p.sources.push(Source { id: new_id, kind }));
         self.reload_sources();
@@ -515,6 +595,15 @@ impl Editor {
         }
         match self.selection.clone() {
             Selection::None => {}
+            Selection::Source(id) => {
+                if self.project.surfaces.iter().any(|s| s.source == id) {
+                    self.status = format!("{id} is still used by a surface");
+                    return;
+                }
+                self.edit(|p| p.sources.retain(|s| s.id != id));
+                self.reload_sources();
+                self.selection = Selection::None;
+            }
             Selection::Output(id) => {
                 self.edit(|p| {
                     p.outputs.retain(|o| o.id != id);
@@ -663,6 +752,7 @@ impl Editor {
                         mask,
                     },
                     Selection::Output(id) if id == old => Selection::Output(new.clone()),
+                    Selection::Source(id) if id == old => Selection::Source(new.clone()),
                     other => other,
                 };
                 for o in &mut self.open_outputs {
@@ -811,7 +901,7 @@ impl Editor {
                     visible: true,
                     opacity: 1.0,
                     blend_mode: lumen_core::project::BlendMode::Normal,
-                    crop: lumen_core::project::Crop::default(),
+                    crop: Crop::default(),
                     warp: WarpKind::default(),
                     masks: Vec::new(),
                     locked: false,
@@ -836,7 +926,9 @@ impl Editor {
         let target = match &self.selection {
             Selection::Output(id) => Some(id.clone()),
             Selection::Surface { id, .. } => self.project.surface(id).map(|s| s.output.clone()),
-            Selection::None => self.project.outputs.first().map(|o| o.id.clone()),
+            Selection::None | Selection::Source(_) => {
+                self.project.outputs.first().map(|o| o.id.clone())
+            }
         };
         for path in paths {
             let Some(kind) = source_kind_for(path) else {
@@ -850,6 +942,15 @@ impl Editor {
             let relative = self.relative_path(path);
             let kind = match kind {
                 SourceKind::Image { .. } => SourceKind::Image { path: relative },
+                SourceKind::Video { playback, .. } => SourceKind::Video {
+                    path: relative,
+                    playback,
+                },
+                SourceKind::Sequence { fps, playback, .. } => SourceKind::Sequence {
+                    path: relative,
+                    fps,
+                    playback,
+                },
                 other => other,
             };
             self.edit(|p| {
@@ -871,7 +972,7 @@ impl Editor {
                         visible: true,
                         opacity: 1.0,
                         blend_mode: lumen_core::project::BlendMode::Normal,
-                        crop: lumen_core::project::Crop::default(),
+                        crop: Crop::default(),
                         warp: WarpKind::default(),
                         masks: Vec::new(),
                         locked: false,
@@ -1622,7 +1723,22 @@ mod tests {
         );
         assert_eq!(e.project.surface("photo-surface").unwrap().output, "right");
         assert!(e.sources.frame("photo").is_some());
-        assert!(source_kind_for(Path::new("x.mov")).is_none());
+        assert!(matches!(
+            source_kind_for(Path::new("x.mov")),
+            Some(SourceKind::Video { .. })
+        ));
+        assert!(matches!(
+            source_kind_for(Path::new("x.GIF")),
+            Some(SourceKind::Sequence { .. })
+        ));
+        assert!(
+            matches!(
+                source_kind_for(dir.path()),
+                Some(SourceKind::Sequence { .. })
+            ),
+            "folders are sequences"
+        );
+        assert!(source_kind_for(Path::new("x.txt")).is_none());
         assert!(source_kind_for(Path::new("noext")).is_none());
         let mut empty = Editor::new(Project::default(), None);
         assert_eq!(empty.add_files(&[img]), 1, "no output: source only");

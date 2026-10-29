@@ -5,6 +5,7 @@ mod handles;
 mod outputs;
 mod panels;
 mod state;
+mod thumbs;
 #[cfg(test)]
 mod ui_tests;
 
@@ -139,6 +140,8 @@ pub struct LumenApp {
     close_confirmed: bool,
     /// Files are being dragged over the window.
     drop_hover: bool,
+    /// Frame clock origin.
+    started: Instant,
 }
 
 impl LumenApp {
@@ -175,11 +178,17 @@ impl LumenApp {
             settings: Settings::default(),
             close_confirmed: false,
             drop_hover: false,
+            started: Instant::now(),
         }
     }
 
     /// Applies loaded preferences to the live state.
     pub fn apply_settings(&mut self, settings: Settings) {
+        if !settings.ffmpeg_path.is_empty() {
+            apply_ffmpeg_path(&settings.ffmpeg_path);
+            self.panels.ffmpeg_ok = lumen_sources::video::Tools::from_env().available();
+            self.panels.ffmpeg_path.clone_from(&settings.ffmpeg_path);
+        }
         self.canvas.show_grid = settings.show_grid;
         self.canvas.grid_divisions = settings.grid_divisions.clamp(2, 64);
         self.canvas.handles.snap = settings.snap;
@@ -466,7 +475,21 @@ impl LumenApp {
         while self.frame_times.len() > 60 {
             self.frame_times.pop_front();
         }
+        self.editor
+            .sources
+            .set_time(now.duration_since(self.started).as_secs_f64());
+        self.editor.sources.sync(&self.editor.project);
         self.editor.sources.poll();
+        let project_sources: Vec<String> = self
+            .editor
+            .project
+            .sources
+            .iter()
+            .map(|s| s.id.clone())
+            .collect();
+        self.panels
+            .thumbs
+            .retain(|id| project_sources.iter().any(|s| s == id));
         if self.editor.poll_osc() > 0 {
             ctx.request_repaint();
         }
@@ -493,7 +516,7 @@ impl LumenApp {
                 &mut actions,
             );
             panels::status_bar(ui, &self.editor, &self.canvas, self.fps(), now);
-            panels::left_panel(ui, &mut self.editor, &mut actions);
+            panels::left_panel(ui, &mut self.editor, &mut self.panels, &mut actions);
             panels::inspector(
                 ui,
                 &mut self.editor,
@@ -569,6 +592,20 @@ impl LumenApp {
         if actions.add_media {
             self.add_media_dialog();
         }
+        if actions.add_folder {
+            if let Some(dir) = self.panels.dialogs.pick_folder() {
+                self.editor.add_files(&[dir]);
+            }
+        }
+        if let Some(path) = actions.ffmpeg_path {
+            if path != self.settings.ffmpeg_path {
+                self.settings.ffmpeg_path.clone_from(&path);
+                self.settings.save();
+                apply_ffmpeg_path(&path);
+                self.panels.ffmpeg_ok = lumen_sources::video::Tools::from_env().available();
+                self.editor.reload_sources();
+            }
+        }
         if actions.create_outputs {
             self.editor
                 .create_outputs_for_monitors(&self.monitors, true);
@@ -590,6 +627,15 @@ impl LumenApp {
 impl eframe::App for LumenApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.frame(ui);
+    }
+}
+
+/// Points the video decoder at a user-chosen ffmpeg binary (empty restores the PATH lookup).
+pub fn apply_ffmpeg_path(path: &str) {
+    if path.trim().is_empty() {
+        std::env::remove_var("LUMEN_FFMPEG");
+    } else {
+        std::env::set_var("LUMEN_FFMPEG", path.trim());
     }
 }
 
