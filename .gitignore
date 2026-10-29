@@ -15,10 +15,3 @@ local.properties
 harness/**/.runner
 harness/**/.credentials*
 
-# lumen (Rust)
-lumen/target/
-lumen/**/*.autosave
-lumen/tests/golden/*.diff.png
-lumen/tests/golden/*.actual.png
-lumen/**/proptest-regressions/
-lumen/lcov.info

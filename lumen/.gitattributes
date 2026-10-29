@@ -1,5 +1,0 @@
-# Golden images are compared byte-for-byte by the test harness; never normalise them.
-*.png binary
-*.jpg binary
-# Keep line endings stable across the Windows and Linux CI runners.
-* text=auto eol=lf
